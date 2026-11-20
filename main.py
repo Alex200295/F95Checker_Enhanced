@@ -34,8 +34,8 @@ def main():
         from modules import gui
         globals.gui = gui.MainGUI()
 
-        from modules import notification_proc, rpc_thread
-        with notification_proc.setup(), rpc_thread.setup():
+        from modules import notification_proc, rpc_thread, toy
+        with notification_proc.setup(), rpc_thread.setup(), toy.setup():
 
             globals.gui.main_loop()
 

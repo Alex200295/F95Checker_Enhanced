@@ -25,7 +25,7 @@ except ModuleNotFoundError:
 # Build configuration
 includes = []
 excludes = ["tkinter"]
-packages = ["OpenGL"]
+packages = ["OpenGL", "numpy", "av", "soundcard"]  # toy modules import them lazily: cx_Freeze must be told
 platform_packages = {
     "linux": ["dbus_fast"],
 }
@@ -61,7 +61,11 @@ platform_qt_plugins = {
 zip_include_files = []
 zip_include_packages = "*"
 zip_exclude_packages = [
+    "av",         # FFmpeg DLLs
     "bencode2",
+    "cffi",       # soundcard loads its C headers from files
+    "numpy",
+    "soundcard",
     "desktop_notifier",
     "glfw",
     "winrt",

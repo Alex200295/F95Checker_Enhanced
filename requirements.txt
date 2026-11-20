@@ -40,3 +40,9 @@ zstd==1.5.7.2
 # Proxy support
 python-socks[asyncio]==3.0.0
 aiohttp_socks==0.12.0
+
+# Connected toy (modules/toy.py, modules/toygen.py): animation analysis, audio loopback
+numpy==2.2.6
+av==19.0.2 ; python_version >= "3.12"
+av==14.0.1 ; python_version < "3.12"
+soundcard==0.4.6

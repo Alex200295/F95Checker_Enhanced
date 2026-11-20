@@ -65,11 +65,14 @@ from modules import (
     callbacks,
     colors,
     db,
+    discover,
     globals,
     icons,
+    installdate,
     msgbox,
     rpc_thread,
     rpdl,
+    toy,
     utils,
     webview,
     wine,
@@ -258,6 +261,29 @@ class Columns:
             sortable=True,
             resizable=False,
             short_header=True,
+        )
+        self.installed_on = self.Column(
+            self, f"{icons.calendar_check} Installed On",
+            sortable=True,
+            resizable=False,
+        )
+        self.size = self.Column(
+            self, f"{icons.harddisk} Size On Disk",
+            sortable=True,
+            resizable=False,
+        )
+        self.engine = self.Column(
+            self, f"{icons.cog_outline} Engine (detected)",
+            sortable=True,
+            resizable=False,
+        )
+        self.cheats = self.Column(
+            self, f"{icons.cheese} Cheats",
+            sortable=True,
+        )
+        self.toy = self.Column(
+            self, f"{icons.vibrate} Toy",
+            sortable=True,
         )
 
 cols = Columns()
@@ -1678,6 +1704,21 @@ class MainGUI():
                     if game.selected:
                         callbacks.open_game_folder(game)
 
+    def draw_game_detect_install_date_button(self, game: Game, label="", selectable=False):
+        if selectable:
+            clicked = imgui.selectable(label, False)[0]
+        else:
+            clicked = imgui.button(label)
+        self.draw_hover_text(
+            "Finds the game folder and executable (also after moving / renaming folders),\n"
+            "ticks Installed if your local copy is the latest version (un-ticks it if older),\n"
+            "and sets the Installed On date from the files.",
+            text=None,
+        )
+        if clicked:
+            games = [game] if game else [g for g in globals.games.values() if g.selected]
+            utils.start_refresh_task(installdate.detect_install_dates(*games), reset_bg_timers=False)
+
     def draw_game_id_button(self, game: Game, label="", selectable=False):
         if game.custom:
             imgui.push_disabled()
@@ -1810,6 +1851,23 @@ class MainGUI():
         self.draw_game_add_exe_button(game, f"{icons.folder_edit_outline} Add Exe", selectable=True)
         self.draw_game_clear_exes_button(game, f"{icons.folder_remove_outline} Clear Exes", selectable=True)
         self.draw_game_open_folder_button(game, f"{icons.folder_open_outline} Open Folder", selectable=True)
+        self.draw_game_detect_install_date_button(game, f"{icons.calendar_search} Scan Local Copy", selectable=True)
+        if game and installdate.local_engine(game) == "Ren'Py":
+            cheats_on = installdate.cheats_enabled(game)
+            if imgui.selectable(f"{icons.cheese} {'Disable' if cheats_on else 'Enable'} Cheats", False)[0]:
+                installdate.toggle_cheats(game)
+            self.draw_hover_text(
+                "Ren'Py developer console (Shift+O in game) to change money, points and other variables.\n"
+                "Adds one small script file to the game folder, removed when you disable it.",
+                text=None,
+            )
+        toy.draw_context_menu(game)
+        if game and imgui.selectable(f"{icons.puzzle_outline} Mods & Extras", False)[0]:
+            discover.open_mods_popup([game])
+        if game and game.installed != game.version and not game.custom:
+            if imgui.selectable(f"{icons.download} Download Update", False)[0]:
+                installdate.start_download(game)
+            self.draw_hover_text("Retrieves the download link and sends it to JDownloader.", text=None)
         imgui.separator()
         self.draw_game_finished_checkbox(game, f"{icons.flag_checkered} Finished")
         self.draw_game_installed_checkbox(game, f"{icons.download} Installed")
@@ -2620,6 +2678,21 @@ class MainGUI():
                 imgui.text_disabled("Personal Rating:")
                 imgui.same_line()
                 self.draw_game_rating_widget(game)
+
+                imgui.table_next_row()
+
+                imgui.table_next_column()
+                imgui.text_disabled("Installed On:")
+                imgui.same_line()
+                imgui.text(game.installed_on_display or "Unknown")
+                self.draw_hover_text(
+                    "Date of the most recent \"Installed\" event in the timeline.\n"
+                    "Set when you tick Installed, or detected from the game files\n"
+                    "with right click > Scan Local Copy (also done after each Refresh).",
+                    text=None,
+                )
+
+                imgui.table_next_column()
 
                 imgui.table_next_row()
 
@@ -3495,6 +3568,16 @@ class MainGUI():
                             key = lambda id: - globals.games[id].last_launched.value
                         case cols.added_on.index:
                             key = lambda id: - globals.games[id].added_on.value
+                        case cols.installed_on.index:
+                            key = lambda id: - globals.games[id].installed_on
+                        case cols.size.index:
+                            key = lambda id: - installdate.local_size(globals.games[id])
+                        case cols.engine.index:
+                            key = lambda id: (installdate.local_engine(globals.games[id]) or globals.games[id].type.name).lower()
+                        case cols.cheats.index:
+                            key = lambda id: installdate.local_cheats_display(globals.games[id]).lower() or "~"
+                        case cols.toy.index:
+                            key = lambda id: toy.toy_display(globals.games[id]).lower() or "~"
                         case cols.finished.index:
                             key = lambda id: 2 if not globals.games[id].finished else 1 if globals.games[id].finished == (globals.games[id].installed or globals.games[id].version) else 0
                         case cols.installed.index:
@@ -3722,6 +3805,20 @@ class MainGUI():
                             imgui.push_font(imgui.fonts.mono)
                             imgui.text(game.added_on.display)
                             imgui.pop_font()
+                        case cols.installed_on.index:
+                            imgui.push_font(imgui.fonts.mono)
+                            imgui.text(game.installed_on_display or "Unknown")
+                            imgui.pop_font()
+                        case cols.size.index:
+                            imgui.push_font(imgui.fonts.mono)
+                            imgui.text(installdate.local_size_display(game) or "-")
+                            imgui.pop_font()
+                        case cols.engine.index:
+                            imgui.text(installdate.local_engine(game) or game.type.name)
+                        case cols.cheats.index:
+                            imgui.text(installdate.local_cheats_display(game))
+                        case cols.toy.index:
+                            imgui.text(toy.toy_display(game))
                         case cols.finished.index:
                             self.draw_game_finished_checkbox(game)
                         case cols.installed.index:
@@ -4003,6 +4100,10 @@ class MainGUI():
             _cluster_text(cols.last_launched.name, game.last_launched.display or "Never")
         if cols.added_on.enabled:
             _cluster_text(cols.added_on.name, game.added_on.display)
+        if cols.installed_on.enabled:
+            _cluster_text(cols.installed_on.name, game.installed_on_display or "Unknown")
+        if cols.size.enabled and installdate.local_size(game):
+            _cluster_text(cols.size.name, installdate.local_size_display(game))
         if cols.rating.enabled:
             if imgui.get_cursor_pos_x() + imgui.calc_text_size(icons.star * 5).x > wrap_pos:
                 imgui.dummy(0, 0)
@@ -4402,6 +4503,7 @@ class MainGUI():
                 imgui.end_popup()
 
         imgui.begin_child("Settings")
+        toy.draw_sidebar_stop(right_width)
 
         if draw_settings_section("Filter", collapsible=False):
             draw_settings_label(f"Total games count: {len(globals.games)}")
@@ -4566,6 +4668,39 @@ class MainGUI():
                                 imgui.set_cursor_pos(pos)
                                 self.draw_type_widget(type)
                             imgui.end_combo()
+
+            imgui.end_table()
+            imgui.spacing()
+
+        if draw_settings_section("Toy & Discover"):
+            draw_settings_label(
+                "Connected toy:",
+                "Intiface Central (Lovense Max 2...): connection, safety caps, emergency stop, patterns,\n"
+                "per-game sync (Ren'Py animations, gamepad rumble, audio).\n"
+                "Emergency stop anywhere: Pause key or Ctrl+Alt+End."
+            )
+            if imgui.button("Panel###toy_panel", width=right_width):
+                toy.open_panel()
+            draw_settings_label(
+                "Built-in toy support:",
+                "Checks the files of all your games for built-in Intiface / Buttplug or Lovense support.\n"
+                "Found games show in the Toy column (list view, right click a header to enable it)."
+            )
+            if imgui.button("Scan###toy_native", width=right_width):
+                async_thread.run(toy.scan_native_all())
+            draw_settings_label(
+                "Recommendations:",
+                "Games you don't have yet, ranked by your tastes: tags of the games you rate high and play long,\n"
+                "developers you play, F95 rating and popularity. Uses F95zone Latest Updates (login needed)."
+            )
+            if imgui.button("Open###discover_reco", width=right_width):
+                discover.open_recommend_popup()
+            draw_settings_label(
+                "Mods & extras:",
+                "Mod / patch / walkthrough / extras links found in the download section of your installed games' threads."
+            )
+            if imgui.button("List###discover_mods", width=right_width):
+                discover.open_mods_popup()
 
             imgui.end_table()
             imgui.spacing()
@@ -5361,6 +5496,56 @@ class MainGUI():
                     start_dir=set.default_exe_dir.get(globals.os),
                     callback=select_callback
                 ).tick)
+
+            draw_settings_label(
+                "Local scan:",
+                "Scans your game folders for ALL games (also done automatically after each full Refresh):\n"
+                " - executables: fixed after moving / renaming folders, found by name (or acronym) for new games,\n"
+                "   switched to a newer version folder of the same game;\n"
+                " - Installed: ticked when your local copy is the latest version, un-ticked when it is older;\n"
+                " - Installed On: the day the files of your version landed on your disk (saves, logs, caches ignored);\n"
+                " - Last Launched: last time you played, read from your saves / logs (also when launched outside F95Checker);\n"
+                " - older version folders still on disk are listed, with a button to delete them (saves are backed up first).\n"
+                "Library folders = Set exe dir + the drive folder of every executable (eg: E:\\Games).\n"
+                "Sort by the Installed On column (right click a column header in list view to enable it)."
+            )
+            if imgui.button("Scan", width=right_width):
+                buttons = {
+                    f"{icons.check} Yes": lambda: utils.start_refresh_task(
+                        installdate.scan_library(*globals.games.values(), manual=True),
+                        reset_bg_timers=False,
+                    ),
+                    f"{icons.cancel} No": None
+                }
+                utils.push_popup(
+                    msgbox.msgbox, "Scan local library",
+                    "Scan all your game folders now?\n"
+                    " - executables are fixed / found / switched to newer version folders,\n"
+                    " - Installed is ticked or un-ticked from your local version,\n"
+                    " - \"Installed\" timeline events more recent than the files are replaced\n"
+                    "   by the date of the files.\n"
+                    "\n"
+                    f"Library folders: {', '.join(str(r) for r in installdate.library_roots(globals.games.values())) or 'none (set the exe dir)'}",
+                    MsgBox.warn,
+                    buttons
+                )
+
+            draw_settings_label(
+                "Updates to do:",
+                "Games where your local copy is older than the latest version, most recently played first.\n"
+                "Shows what changed since your version, warns when the disk is too full, and has a Download button "
+                "that sends the link to JDownloader."
+            )
+            if imgui.button("Open", width=right_width):
+                installdate.open_updates_popup()
+
+            draw_settings_label(
+                "Finished games:",
+                "Games completed by their developer that you have not played for 60+ days: tick them as Finished, "
+                "and optionally uninstall them (saves are kept)."
+            )
+            if imgui.button("Review", width=right_width):
+                installdate.open_finished_popup()
 
             draw_settings_label(
                 "Exe Wrappers:",

@@ -3,9 +3,9 @@ import pathlib
 import sys
 
 version = "11.2.1"
-release = False
+release = True  # Installed On mod: behave like the official 11.2.1 release (no "update from beta" prompt)
 build_number = 0
-version_name = f"{version}{'' if release else ' beta'}{'' if release or not build_number else ' ' + str(build_number)}"
+version_name = f"{version}{'' if release else ' beta'}{'' if release or not build_number else ' ' + str(build_number)}" + " + Installed On + Toy"
 rpc_port = 57095
 rpc_url = f"http://127.0.0.1:{rpc_port}"
 

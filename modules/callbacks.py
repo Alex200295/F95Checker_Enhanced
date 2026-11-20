@@ -443,7 +443,10 @@ def _track_launch(game: Game, process):
 
 async def _launch_game_exe(game: Game, executable: str):
     try:
+        from modules import toy
+        await toy.before_launch(game)  # Ren'Py toy sync script must exist before the game loads
         _track_launch(game, await _launch_exe(executable, wrapper=_resolve_launch_wrapper(game)))
+        toy.on_game_launched(game)
         game.last_launched = time.time()
         exe = pathlib.Path(executable)
         if utils.is_uri(executable):

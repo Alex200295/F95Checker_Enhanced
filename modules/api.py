@@ -1745,6 +1745,12 @@ async def refresh(*games: Game, full=False, notifs=True, force_archived=False, f
     if not games:
         globals.settings.last_successful_refresh.update(time.time())
         await db.update_settings("last_successful_refresh")
+        # Local library scan: executables, local updates (Installed), install dates. Popup only if something changed.
+        from modules import installdate
+        try:
+            await installdate.scan_library(manual=False)
+        except Exception:
+            print(f"[LocalScan] Automatic scan failed: {error.traceback()}")
 
 
 async def download_file(download: FileDownload):

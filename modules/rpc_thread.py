@@ -150,6 +150,11 @@ def start():
                             globals.gui.hide()
                         case "/window/refresh_styles":
                             globals.gui.load_styles_from_toml()
+                        case "/toy/event":
+                            # Ren'Py toy sync script (modules/toy.py) reporting the animation on screen
+                            length = min(int(self.headers.get("Content-Length") or 0), 65536)
+                            from modules import toy
+                            toy.on_hook_event(json.loads(self.rfile.read(length) or b"{}"))
                         case "/games/add":
                             urls = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                             if matches := utils.extract_thread_matches("\n".join(urls)):

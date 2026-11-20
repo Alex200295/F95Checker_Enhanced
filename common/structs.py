@@ -1252,6 +1252,28 @@ class Game:
 
 
     @property
+    def installed_on(self):
+        # Install date = most recent "Installed" timeline event (set by the Installed checkbox,
+        # Add Exe, or Settings > Manage > Detect install dates). 0 if not installed / unknown.
+        if not self.installed:
+            return 0
+        return max(
+            (event.timestamp.value for event in self.timeline_events if event.type == TimelineEventType.GameInstalled),
+            default=0,
+        )
+
+    @property
+    def installed_on_display(self):
+        installed_on = self.installed_on
+        if not installed_on:
+            return ""
+        from modules import globals
+        try:
+            return dt.datetime.fromtimestamp(installed_on).strftime(globals.settings.datestamp_format)
+        except Exception:
+            return "Bad format!"
+
+    @property
     def playtime_display(self):
         playtime = self.playtime
         if self.launch_state is not LaunchState.Idle and self.launch_started:
