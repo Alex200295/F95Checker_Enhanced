@@ -62,13 +62,25 @@ LOG_PREFIX = "[LocalScan]"
 # Written by games while playing (Ren'Py, RPG Maker, Tyrano, Unity...), lowercase
 EXCLUDED_DIRS = {
     "saves", "save", "savedata", "cache", "logs", "log", "__pycache__", "screenshots", "crashes", "temp", "tmp",
+    # added next to games by F95Checker / graphics mods, not by a game update
+    "reshade-shaders", "_f95checker_dlss5",
 }
 EXCLUDED_FILES = {
     "log.txt", "traceback.txt", "errors.txt", "persistent", "output_log.txt", "player.log", "player-prev.log",
     "desktop.ini", "thumbs.db",
+    # F95Checker's own files in games (cheats console, toy sync, DLSS 5 kit) and ReShade / DLSS 5 mods:
+    # adding them must not make the game look freshly updated
+    "zz_f95checker_console.rpy", "zz_f95checker_console.rpyc", "zz_f95toy.rpy", "zz_f95toy.rpyc",
+    "dlss5_settings.rpy", "dlss5_settings.rpyc", "_f95dlss5.json",
+    "dxgi.dll", "dxgi.dll.off", "reshade.ini", "reshadepreset.ini", "nvngx_dlss.dll", "nvngx_dlssnr.dll",
+    "nvngx_dlss.dll.ver", "nvngx_dlssnr.dll.ver", "setup dlss5.bat", "uninstall dlss5.bat", "reshade_setup.exe",
+    "dlss5-feed.cfg",
+    # RHI / OptiScaler / DLSS Enabler kits (upscaler & frame-pacing injectors put next to the exe)
+    "optiscaler.ini", "dlss-enabler.ini", "bfipresenter.ini", "relimiter.ini", "rhi_install.txt",
+    "version.dll", "winmm.dll",
 }
 EXCLUDED_EXTS = {
-    ".log", ".save", ".sav", ".tmp", ".bak",
+    ".log", ".save", ".sav", ".tmp", ".bak", ".addon64", ".addon32", ".original",
 }
 # Play-time files: their modification time = last time you played (never used for the install date)
 PLAY_DIRS = {"saves", "save", "savedata"}
@@ -726,6 +738,12 @@ async def _scan_game(game: Game, lib: Library, base: pathlib.Path | None, manual
             if files:
                 report.mods.append(ModCarry(game.name, files, res.executable.parent / "game"))
     local_v, local_label = local_version(res)
+    if info.get("imported_folder") == str(res.executable.parent) and info.get("imported_version"):
+        # Update installed with "Import Update" without renaming the folder: its name still has the old version
+        local_v, local_label = version_tuple(info["imported_version"]), info["imported_version"]
+        if not local_v and info["imported_version"] == game.version:
+            local_v = version_tuple(game.version) or (1,)
+            local_label = game.version
     f95_v = version_tuple(game.version)
     state = None
     if not game.custom:
@@ -762,9 +780,10 @@ async def _scan_game(game: Game, lib: Library, base: pathlib.Path | None, manual
         report.played.append(f"{game.name}: {time.strftime('%Y-%m-%d', time.localtime(played))}")
 
 
-async def scan_library(*games: Game, manual=True):
+async def scan_library(*games: Game, manual=True, reserved=False):
     """manual=True: Detect button / right click (summary popup, install dates recalibrated on files).
-    manual=False: after a full Refresh (popup only if something changed, dates only move forward)."""
+    manual=False: after a full Refresh (popup only if something changed, dates only move forward).
+    reserved=True: the full Refresh already counted these games in its progress bar (no 100% -> 51% jump)."""
     games = list(games or globals.games.values())
     base = _exe_dir()
     loop = asyncio.get_running_loop()
@@ -772,7 +791,7 @@ async def scan_library(*games: Game, manual=True):
     if manual:
         globals.refresh_total = max(1, len(games))
         globals.refresh_progress = 0
-    else:
+    elif not reserved:
         globals.refresh_total += len(games)
     report = ScanReport()
     _log(f"Start ({'manual' if manual else 'auto'}): {len(games)} game(s)")
@@ -1189,14 +1208,42 @@ def send_to_jdownloader(link: str, source: str) -> bool:
         return False
 
 
+_prefs: dict | None = None
+
+
+def prefs() -> dict:
+    """Small preferences of this module (local_scan_prefs.json): {"jdownloader": False}."""
+    global _prefs
+    if _prefs is None:
+        try:
+            _prefs = json.loads((globals.data_path / "local_scan_prefs.json").read_text(encoding="utf-8"))
+        except Exception:
+            _prefs = {}
+        _prefs.setdefault("jdownloader", False)
+    return _prefs
+
+
+def save_prefs():
+    try:
+        (globals.data_path / "local_scan_prefs.json").write_text(json.dumps(prefs()), encoding="utf-8")
+    except OSError as exc:
+        _log(f"Cannot save local_scan_prefs.json: {exc}")
+
+
 async def download_update(game: Game):
-    """Resolves the real host link (same automated browser as the Downloads tab) and hands it to JDownloader."""
+    """Default: opens the host page in your browser (full speed, you choose the file), then Import Update installs it.
+    With "Send to JDownloader": resolves the real host link (same automated browser as the Downloads tab) for JDownloader."""
     from modules import api, callbacks, webview
     picked = pick_download(game)
     if picked is None or not picked[1]:
         callbacks.open_webpage(game.url)  # Thread without parsed download links
         return
     host, link = picked
+    if not prefs()["jdownloader"]:
+        # F95zone masked links open fine in your browser (you are logged in there): one click on the host button
+        callbacks.open_webpage(link if link.startswith("http") else game.url)
+        _log(f"'{game.name}': {host} page opened in the browser")
+        return
     try:
         if link.startswith("//") or link.startswith(f"{api.f95_host}/masked/"):
             if not await api.assert_login():
@@ -1276,12 +1323,21 @@ def open_updates_popup():
         scaled = globals.gui.scaled
         free = "   ".join(f"{root.anchor} {size_display(free_space(root))}" for root in roots)
         imgui.text(f"{len(games)} game(s) where your copy is older than the latest version. Most recently played first.")
-        imgui.text_disabled(f"Free space:  {free}" + (f"      JDownloader extracts to: {target}" if target else ""))
+        imgui.text_disabled(f"Free space:  {free}" + (f"      JDownloader extracts to: {target}" if target and prefs()["jdownloader"] else ""))
+        changed, value = imgui.checkbox("Download: send the link to JDownloader (otherwise: open the host page in your browser)", prefs()["jdownloader"])
+        if changed:
+            prefs()["jdownloader"] = value
+            save_prefs()
+        imgui.text_disabled("Browser: download the archive, then Import to install it into the game folder.")
         imgui.spacing()
         imgui.begin_child("###updates_list", width=scaled(980), height=min(scaled(560), imgui.io.display_size.y * 0.65))
         for game in list(games):
             if imgui.small_button(f"{icons.download} Download###update_dl_{game.id}"):
                 start_download(game)
+            imgui.same_line()
+            if imgui.small_button(f"{icons.archive_arrow_down_outline} Import###update_import_{game.id}"):
+                from modules import importupdate
+                importupdate.import_update(game)
             imgui.same_line()
             if imgui.small_button(f"{icons.eye_off_outline} Ignore###update_ignore_{game.id}"):
                 ignore(game)
@@ -1467,6 +1523,23 @@ def detect_engine(exe: pathlib.Path) -> tuple[str, list[str]]:
 
 def local_engine(game: Game) -> str:
     return local_info().get(game.id, {}).get("engine") or ""
+
+
+_engine_now_cache: dict[int, tuple[float, str]] = {}
+
+
+def engine_now(game: Game) -> str:
+    """Engine from the last scan, or read from the game folder now (cheap, cached 30 s) when not scanned yet."""
+    engine = local_engine(game)
+    if engine:
+        return engine
+    cached = _engine_now_cache.get(game.id)
+    if cached and time.monotonic() - cached[0] < 30:
+        return cached[1]
+    exe = _main_exe(game)
+    engine = detect_engine(exe)[0] if exe is not None else ""
+    _engine_now_cache[game.id] = (time.monotonic(), engine)
+    return engine
 
 
 def local_cheats_display(game: Game) -> str:
