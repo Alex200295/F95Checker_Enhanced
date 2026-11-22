@@ -386,6 +386,9 @@ async def run_import(plan: Plan, job: Job):
         # the scan reads versions from folder names: remember what this folder really holds now
         info["imported_folder"] = str(new_exe.parent)
         info["import_dir"] = str(plan.archive.parent)
+        # Library tools > Clean up: archives already installed can be deleted
+        imported = [a for a in info.get("imported_archives", []) if a != str(plan.archive)] + [str(plan.archive)]
+        info["imported_archives"] = imported[-20:]
         installdate.save_local_info()
         await installdate._record_install_date(game, int(time.time()), plan.new_name or plan.dest.name, replace_newer=False)
         _log(f"'{game.name}': {summary!r}")

@@ -21,6 +21,7 @@ Runs automatically after each full Refresh, and manually from Settings > Manage 
 Install dates (Detect) or right click > Detect Install Date.
 """
 import asyncio
+import contextlib
 import dataclasses
 import json
 import os
@@ -63,7 +64,7 @@ LOG_PREFIX = "[LocalScan]"
 EXCLUDED_DIRS = {
     "saves", "save", "savedata", "cache", "logs", "log", "__pycache__", "screenshots", "crashes", "temp", "tmp",
     # added next to games by F95Checker / graphics mods, not by a game update
-    "reshade-shaders", "_f95checker_dlss5",
+    "reshade-shaders", "_f95checker_dlss5", "_disabled_mods",
 }
 EXCLUDED_FILES = {
     "log.txt", "traceback.txt", "errors.txt", "persistent", "output_log.txt", "player.log", "player-prev.log",
@@ -685,6 +686,7 @@ class ScanReport:
     played: list[str] = dataclasses.field(default_factory=list)
     saves_carried: list[str] = dataclasses.field(default_factory=list)
     mods: list["ModCarry"] = dataclasses.field(default_factory=list)
+    mods_old: list[str] = dataclasses.field(default_factory=list)   # games with mods older than their update
     old_versions: list["OldVersion"] = dataclasses.field(default_factory=list)
     errors: list[str] = dataclasses.field(default_factory=list)
 
@@ -726,6 +728,13 @@ async def _scan_game(game: Game, lib: Library, base: pathlib.Path | None, manual
         info.update(path=str(res.target), files_ts=files_ts, size=size)
     # Real engine + cheat mods found in the folder (Engine / Cheats columns)
     info["engine"], info["cheats"] = await loop.run_in_executor(None, detect_engine, res.executable)
+    # Version-specific mods (walkthrough, cheats, gallery...) older than the files of this version: may break it
+    old_mods = await loop.run_in_executor(None, outdated_mods, res.executable, files_ts)
+    old_mods = [m for m in old_mods if m not in info.get("mods_old_ok", [])]
+    if old_mods != info.get("mods_old", []):
+        if [m for m in old_mods if m not in info.get("mods_old", [])]:
+            report.mods_old.append(f"{game.name}: {', '.join(old_mods)}")
+        info["mods_old"] = old_mods
     # Carry over from older version folders still on disk: RPG Maker saves (copied), Ren'Py mods (proposed)
     for old_folder, kind in res.old_folders:
         if kind != "old":
@@ -823,7 +832,7 @@ async def scan_library(*games: Game, manual=True, reserved=False):
     new_old_versions += [mod for mod in report.mods if str(mod.dest) + "#mods" not in _announced_old_versions]
     _announced_old_versions.update(str(old.path) for old in report.old_versions)
     _announced_old_versions.update(str(mod.dest) + "#mods" for mod in report.mods)
-    if not manual and not report.changes and not report.errors and not new_old_versions:
+    if not manual and not report.changes and not report.errors and not new_old_versions and not report.mods_old:
         return
 
     lines = []
@@ -848,6 +857,8 @@ async def scan_library(*games: Game, manual=True, reserved=False):
         lines.append(f"{len(report.saves_carried)} RPG Maker game(s): saves copied from the old version to the new one.")
     if report.mods:
         lines.append(f"{len(report.mods)} game(s) have cheat / walkthrough mods in their old version only: you can copy them below.")
+    if report.mods_old:
+        lines.append(f"{len(report.mods_old)} game(s) have mods older than their update (they can make the game crash): see below.")
     if report.errors:
         lines.append(f"{len(report.errors)} error(s), see details.")
     more = ""
@@ -860,6 +871,7 @@ async def scan_library(*games: Game, manual=True, reserved=False):
         ("Older versions still on disk (can be deleted)", [str(old) for old in report.old_versions]),
         ("Saves copied to the new version", report.saves_carried),
         ("Mods only in the old version", [str(mod) for mod in report.mods]),
+        ("Mods older than the update", report.mods_old),
         ("Last played", report.played if manual else []),
         ("Not found on disk", report.not_found if manual else []),
         ("Install dates", report.dates if manual else []),
@@ -874,6 +886,8 @@ async def scan_library(*games: Game, manual=True, reserved=False):
     if report.mods:
         mods = list(report.mods)
         buttons[f"{icons.content_copy} Copy mods ({len(mods)})"] = lambda: copy_mods(mods)
+    if report.mods_old:
+        buttons[f"{icons.alert_outline} Mods to check ({len(report.mods_old)})"] = open_outdated_mods_popup
     if outdated_games():
         buttons[f"{icons.download} Updates to do ({len(outdated_games())})"] = open_updates_popup
     utils.push_popup(
@@ -1763,6 +1777,98 @@ def toggle_cheats(game: Game):
         info["engine"], info["cheats"] = detect_engine(exe)
         save_local_info()
     utils.push_popup(msgbox.msgbox, "Cheats", message, MsgBox.info)
+
+
+UNIVERSAL_MOD_RE = re.compile(r"urm|universal|0x52|unren|console", re.IGNORECASE)   # work with any version
+DISABLED_MODS_DIR = "_disabled_mods"
+
+
+def outdated_mods(exe: pathlib.Path, files_ts: int) -> list[str]:
+    """Ren'Py: version-specific mod files in game/ (2 levels) dated more than a day before the newest game file."""
+    game_dir = exe.parent / "game"
+    if not files_ts or not (exe.parent / "renpy").is_dir() or not game_dir.is_dir():
+        return []
+    found = []
+    for current, dirs, files in os.walk(game_dir):
+        depth = len(pathlib.Path(current).relative_to(game_dir).parts)
+        dirs[:] = [d for d in dirs if depth < 2 and d.lower() not in EXCLUDED_DIRS]
+        for name in files:
+            low = name.lower()
+            if os.path.splitext(low)[1] not in MOD_EXTS or not MOD_RE.search(low) or UNIVERSAL_MOD_RE.search(low):
+                continue
+            if low in EXCLUDED_FILES:
+                continue
+            with contextlib.suppress(OSError):
+                if os.stat(os.path.join(current, name)).st_mtime < files_ts - 86400:
+                    found.append((pathlib.Path(current) / name).relative_to(game_dir).as_posix())
+    return sorted(found, key=str.lower)
+
+
+def disable_mod(game: Game, rel: str) -> str:
+    """Moves game/<rel> to <game folder>/_disabled_mods/<rel> (outside game/: Ren'Py loads every subfolder of game/)."""
+    exe = _main_exe(game)
+    if exe is None:
+        return "executable not found"
+    src = exe.parent / "game" / rel
+    dst = exe.parent / DISABLED_MODS_DIR / rel
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(src, dst)
+        if src.suffix.lower() == ".rpy":                   # its compiled copy too
+            compiled = src.with_suffix(".rpyc")
+            if compiled.is_file():
+                os.replace(compiled, dst.with_suffix(".rpyc"))
+    except OSError as exc:
+        return str(exc)
+    info = local_info().setdefault(game.id, {})
+    info["mods_old"] = [m for m in info.get("mods_old", []) if m not in (rel, rel[:-4] + ".rpyc" if rel.endswith(".rpy") else rel)]
+    save_local_info()
+    _log(f"'{game.name}': mod {rel} moved to {DISABLED_MODS_DIR}")
+    return ""
+
+
+def keep_mod(game: Game, rel: str):
+    info = local_info().setdefault(game.id, {})
+    info.setdefault("mods_old_ok", []).append(rel)
+    info["mods_old"] = [m for m in info.get("mods_old", []) if m != rel]
+    save_local_info()
+
+
+def outdated_mods_of(game: Game) -> list[str]:
+    return list(local_info().get(game.id, {}).get("mods_old", []))
+
+
+def open_outdated_mods_popup(games: list[Game] = None):
+    import imgui
+    from modules import discover
+
+    def content():
+        rows = [(g, outdated_mods_of(g)) for g in (games or globals.games.values())]
+        rows = [(g, mods) for g, mods in rows if mods]
+        imgui.text_disabled("These walkthrough / cheat / gallery mods are older than the version of the game installed now.\n"
+                            "A mod made for an older version can crash the game or break its scenes.\n"
+                            f"Disable = moved to <game folder>\\{DISABLED_MODS_DIR} (move it back to game\\ to undo).")
+        if not rows:
+            imgui.text("Nothing left to check.")
+            return
+        for g, mods in sorted(rows, key=lambda r: r[0].name.lower()):
+            imgui.separator()
+            imgui.text(f"{g.name}  ({g.installed or g.version})")
+            imgui.same_line()
+            if imgui.small_button(f"Find an update of the mod###mo_find_{g.id}"):
+                discover.open_mods_popup([g])
+            for rel in mods:
+                imgui.bullet_text(rel)
+                imgui.same_line()
+                if imgui.small_button(f"Disable###mo_off_{g.id}_{rel}"):
+                    error_text = disable_mod(g, rel)
+                    if error_text:
+                        utils.push_popup(msgbox.msgbox, "Mods", f"{rel}: {error_text}", MsgBox.warn)
+                imgui.same_line()
+                if imgui.small_button(f"It works, keep it###mo_ok_{g.id}_{rel}"):
+                    keep_mod(g, rel)
+
+    utils.push_popup(utils.popup, "Mods to check", content, buttons=True, closable=True, outside=False, popup_uuid="mods_old")
 
 
 @dataclasses.dataclass(slots=True)

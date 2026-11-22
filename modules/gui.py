@@ -66,6 +66,7 @@ from modules import (
     colors,
     db,
     discover,
+    extras,
     globals,
     icons,
     importupdate,
@@ -1877,6 +1878,9 @@ class MainGUI():
         pctools.draw_context_menu(game)
         if game and imgui.selectable(f"{icons.puzzle_outline} Mods & Extras", False)[0]:
             discover.open_mods_popup([game])
+        if game and (old_mods := installdate.outdated_mods_of(game)):
+            if imgui.selectable(f"{icons.alert_outline} Mods older than this version ({len(old_mods)})", False)[0]:
+                installdate.open_outdated_mods_popup([game])
         if game and game.installed != game.version and not game.custom:
             if imgui.selectable(f"{icons.download} Download Update", False)[0]:
                 installdate.start_download(game)
@@ -4213,6 +4217,8 @@ class MainGUI():
             column_count -= 1
         expand = cell_width > min_expand_width
         img_height = cell_width / globals.settings.cell_image_ratio
+        if imgui.small_button(f"{icons.dice_multiple} What to play tonight?###tonight_grid"):
+            extras.open_tonight_popup()
         visuals.draw_hero(self, self.show_games_ids[self.current_tab])
         showcase.draw_shelf(self, self.show_games_ids[self.current_tab])
         imgui.push_style_var(imgui.STYLE_CELL_PADDING, (padding, padding))
@@ -4852,6 +4858,40 @@ class MainGUI():
                     count = await asyncio.get_running_loop().run_in_executor(None, installdate.apply_renpy_prefs_all)
                     utils.push_popup(msgbox.msgbox, "Ren'Py preferences", f"{count} Ren'Py game(s) updated.", MsgBox.info)
                 async_thread.run(_apply_prefs())
+            # Extras (modules/extras.py) and shared Ren'Py engine
+            draw_settings_label("What to play tonight?", "Draws one of your installed, unfinished games, weighted by your tastes,\n"
+                                                        "updates since your last play and how long ago you played it.")
+            if imgui.button("Open###lt_tonight", width=right_width):
+                extras.open_tonight_popup()
+            draw_settings_label("Clean up:", "Archives in your download folders already installed, Ren'Py caches, leftovers of\n"
+                                             "interrupted imports. Shown first with their size; archives go to the recycle bin.")
+            if imgui.button("Open###lt_clean", width=right_width):
+                extras.open_cleanup_popup()
+            draw_settings_label("Ren'Py engine:", "Identical engine files of your Ren'Py games (renpy\\, lib\\) stored once per drive\n"
+                                                  "(hard links). Analyse shows the gain first; Undo makes separate copies again.")
+            if imgui.button("Open###lt_engine", width=right_width):
+                pctools.open_engine_popup()
+            ep = extras.prefs()
+            draw_settings_label("Discretion key:", "Anywhere in Windows: stops the toy, minimises the running games (and F95Checker),\n"
+                                                   "mutes the sound. Press again to get the games and the sound back.\n"
+                                                   "Examples: ctrl+alt+h, ctrl+shift+f12, pause. Empty = off.")
+            imgui.set_next_item_width(right_width * 0.6)
+            changed, value = imgui.input_text("###lt_discreet_key", ep["discreet_key"], 40)
+            if changed:
+                ep["discreet_key"] = value.strip().lower()
+                installdate.save_prefs()
+            imgui.same_line()
+            if imgui.button("Apply###lt_discreet_apply"):
+                if ep["discreet_key"] and extras.parse_hotkey(ep["discreet_key"]) is None:
+                    utils.push_popup(msgbox.msgbox, "Discretion key", f"'{ep['discreet_key']}' is not a key combination F95Checker understands.", MsgBox.warn)
+                else:
+                    extras.restart_hotkey()
+            for key, label in (("discreet_mute", "mute the sound"), ("discreet_hide_f95", "minimise F95Checker too")):
+                imgui.same_line()
+                changed, value = imgui.checkbox(f"{label}###lt_{key}", bool(ep[key]))
+                if changed:
+                    ep[key] = value
+                    installdate.save_prefs()
             # Drive balance
             draw_settings_label(
                 "Drives:",

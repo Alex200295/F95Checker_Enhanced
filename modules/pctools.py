@@ -26,6 +26,7 @@ import contextlib
 import dataclasses
 import os
 import pathlib
+import hashlib
 import random
 import re
 import shutil
@@ -860,6 +861,206 @@ def open_balance_popup():
             imgui.end_table()
 
     utils.push_popup(utils.popup, "Drive balance", content, buttons=True, closable=True, outside=False, popup_uuid="pctools_balance")
+
+
+# ---------------------------------------------------------------------------
+# Shared Ren'Py engine (Library tools > Ren'Py engine: Analyse / Share / Undo)
+# ---------------------------------------------------------------------------
+# Every Ren'Py game carries its own copy of the engine (renpy\ and lib\), often identical between games of the
+# same Ren'Py version. Identical files on the same drive become NTFS hard links to one copy (like the DLSS 5 kit):
+# no space used twice. Games only read these files; an update replaces files (it never rewrites them in place),
+# which simply gives that game its own copy again. The copy kept is the oldest one, so no game looks updated.
+
+ENGINE_DIRS = ("renpy", "lib")
+ENGINE_MIN_SIZE = 16 * 1024          # smaller files are not worth a link
+
+
+@dataclasses.dataclass(slots=True)
+class EngineJob:
+    running: bool = False
+    cancel: bool = False
+    step: str = ""
+    done: int = 0
+    total: int = 0
+    groups: list = dataclasses.field(default_factory=list)      # [[path, path, ...], ...] identical, same drive
+    gain: dict = dataclasses.field(default_factory=dict)        # drive -> bytes to gain
+    linked: int = 0                                              # bytes freed by the last Share
+    message: str = ""
+
+
+engine_job = EngineJob()
+
+
+def renpy_folders() -> list[tuple[Game, pathlib.Path]]:
+    out = []
+    for game in globals.games.values():
+        exe = installdate._main_exe(game)
+        if exe is not None and (exe.parent / "renpy").is_dir() and (exe.parent / "game").is_dir():
+            out.append((game, exe.parent))
+    return out
+
+
+def _file_hash(path: pathlib.Path) -> str:
+    digest = hashlib.sha1()
+    with open(path, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _file_age(st) -> float:
+    return max(getattr(st, "st_birthtime", 0) or 0, st.st_mtime)
+
+
+def analyse_engine(job: EngineJob):
+    """Blocking. Fills job.groups / job.gain with identical engine files (same drive, same place, same bytes)."""
+    job.step, job.done, job.total = "Listing engine files", 0, 0
+    by_place: dict[tuple, list[tuple[pathlib.Path, os.stat_result]]] = {}
+    folders = [(g, f) for g, f in renpy_folders() if g.launch_state is LaunchState.Idle]
+    for _, folder in folders:
+        for sub in ENGINE_DIRS:
+            for current, _, files in os.walk(folder / sub):
+                for name in files:
+                    path = pathlib.Path(current) / name
+                    with contextlib.suppress(OSError):
+                        st = path.stat()
+                        if st.st_size >= ENGINE_MIN_SIZE:
+                            # same volume (st_dev) = hard link possible; same place in the engine and same size
+                            by_place.setdefault((st.st_dev, path.relative_to(folder).as_posix().lower(), st.st_size), []).append((path, st))
+    candidates = [paths for paths in by_place.values() if len({(st.st_dev, st.st_ino) for _, st in paths}) > 1]
+    job.step, job.total = "Comparing contents", sum(len(c) for c in candidates)
+    groups, gain = [], {}
+    for paths in candidates:
+        if job.cancel:
+            break
+        by_hash: dict[str, list[tuple[pathlib.Path, os.stat_result]]] = {}
+        hashed_inodes: dict[tuple, str] = {}
+        for path, st in paths:
+            inode = (st.st_dev, st.st_ino)
+            try:
+                digest = hashed_inodes.get(inode) or _file_hash(path)
+            except OSError:
+                continue
+            hashed_inodes[inode] = digest
+            by_hash.setdefault(digest, []).append((path, st))
+            job.done += 1
+        for same in by_hash.values():
+            inodes = {(st.st_dev, st.st_ino) for _, st in same}
+            if len(inodes) > 1:
+                groups.append([p for p, _ in same])
+                drive = os.path.splitdrive(str(same[0][0]))[0].upper() or f"volume {same[0][1].st_dev}"
+                gain[drive] = gain.get(drive, 0) + same[0][1].st_size * (len(inodes) - 1)
+    job.groups, job.gain = groups, gain
+    job.message = (f"{installdate.size_display(sum(gain.values()))} can be saved ({len(groups)} files shared by several games)"
+                   if groups else "Nothing to share: the engines are all different or already shared.")
+
+
+def share_engine(job: EngineJob):
+    """Blocking. Each group of identical files -> hard links to the oldest copy."""
+    job.step, job.done, job.total, job.linked = "Sharing", 0, len(job.groups), 0
+    running = {str(f) for g, f in renpy_folders() if g.launch_state is not LaunchState.Idle}
+    for group in job.groups:
+        if job.cancel:
+            break
+        job.done += 1
+        try:
+            stats = [(p, p.stat()) for p in group]
+        except OSError:
+            continue
+        master, master_st = min(stats, key=lambda ps: _file_age(ps[1]))
+        for path, st in stats:
+            if (st.st_dev, st.st_ino) == (master_st.st_dev, master_st.st_ino):
+                continue
+            if any(path.is_relative_to(r) for r in running):
+                continue
+            tmp = path.with_name(path.name + ".f95link")
+            try:
+                with contextlib.suppress(FileNotFoundError):
+                    tmp.unlink()
+                os.link(master, tmp)
+                if not os.access(path, os.W_OK):
+                    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+                os.replace(tmp, path)
+                job.linked += st.st_size
+            except OSError as exc:
+                with contextlib.suppress(OSError):
+                    tmp.unlink()
+                _log(f"Engine sharing skipped {path}: {exc}")
+    job.groups = []
+    job.message = f"{installdate.size_display(job.linked)} freed."
+    _log(f"Ren'Py engine sharing: {job.message}")
+
+
+def unshare_engine(job: EngineJob):
+    """Blocking. Every shared engine file becomes a separate copy again (needs the space back)."""
+    job.step, job.done, job.total = "Separating", 0, 0
+    count = 0
+    for game, folder in renpy_folders():
+        if game.launch_state is not LaunchState.Idle:
+            continue
+        for sub in ENGINE_DIRS:
+            for current, _, files in os.walk(folder / sub):
+                for name in files:
+                    path = pathlib.Path(current) / name
+                    tmp = path.with_name(path.name + ".f95copy")
+                    try:
+                        if path.stat().st_nlink < 2:
+                            continue
+                        shutil.copy2(path, tmp)
+                        os.replace(tmp, path)
+                        count += 1
+                    except OSError as exc:
+                        with contextlib.suppress(OSError):
+                            tmp.unlink()
+                        _log(f"Engine separation skipped {path}: {exc}")
+    job.message = f"{count} engine files are separate copies again."
+
+
+async def _engine_task(func):
+    job = engine_job
+    if job.running:
+        return
+    job.running, job.cancel = True, False
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, func, job)
+    except Exception as exc:
+        job.message = f"Error: {exc}"
+        _log(f"Engine sharing: {error.traceback()}")
+    finally:
+        job.running = False
+        job.step = ""
+
+
+def open_engine_popup():
+    import imgui
+
+    def content():
+        job = engine_job
+        imgui.text_disabled("Identical Ren'Py engine files (renpy\\, lib\\) of your games on the same drive become one copy\n"
+                            "(NTFS hard links, like the DLSS 5 kit). Games run as before; an update gives the game its own copy back.\n"
+                            "Running games are left out. Undo makes every engine file a separate copy again (needs the space).")
+        if job.running:
+            imgui.text(f"{job.step}: {job.done}/{job.total}")
+            imgui.same_line()
+            if imgui.small_button("Stop###eng_stop"):
+                job.cancel = True
+            return
+        if job.message:
+            imgui.text(job.message)
+        for drive, size in sorted(job.gain.items()):
+            if job.groups:
+                imgui.bullet_text(f"{drive.upper()}  {installdate.size_display(size)}")
+        if imgui.button("Analyse###eng_an"):
+            async_thread.run(_engine_task(analyse_engine))
+        if job.groups:
+            imgui.same_line()
+            if imgui.button(f"Share ({installdate.size_display(sum(job.gain.values()))})###eng_share"):
+                async_thread.run(_engine_task(share_engine))
+        imgui.same_line()
+        if imgui.button("Undo###eng_undo"):
+            async_thread.run(_engine_task(unshare_engine))
+
+    utils.push_popup(utils.popup, "Ren'Py engine sharing", content, buttons=True, closable=True, outside=False, popup_uuid="pctools_engine")
 
 
 # ---------------------------------------------------------------------------
