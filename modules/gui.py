@@ -67,6 +67,7 @@ from modules import (
     db,
     discover,
     extras,
+    lock,
     globals,
     icons,
     importupdate,
@@ -1019,6 +1020,7 @@ class MainGUI():
                         or api.updating
                         or showcase.needs_redraw()
                         or visuals.needs_redraw()
+                        or lock.tick(self)
                     )
                     if draw:
                         draw_next = max(draw_next, imgui.io.delta_time + 1.0)  # Draw for at least next half second
@@ -1051,72 +1053,76 @@ class MainGUI():
                         imgui.push_style_var(imgui.STYLE_WINDOW_BORDERSIZE, 0)
                         imgui.begin("F95Checker", closable=False, flags=self.window_flags)
                         imgui.pop_style_var()
-                        sidebar_size = self.scaled(self.sidebar_size)
-
-                        # Main pane
-                        imgui.begin_child("###main_frame", width=-sidebar_size)
-                        self.hovered_game = None
-                        # Tabbar
-                        self.draw_tabbar()
-                        # Games container
-                        match globals.settings.display_mode.value:
-                            case DisplayMode.list.value:
-                                self.draw_games_list()
-                            case DisplayMode.grid.value:
-                                self.draw_games_grid()
-                            case DisplayMode.kanban.value:
-                                self.draw_games_kanban()
-                        # Bottombar
-                        self.draw_bottombar()
-                        imgui.end_child()
-
-                        # Prepare bottom status / watermark text (done before sidebar to get text offset from bottom of window)
-                        if (count := api.images_counter.count) > 0:
-                            text = f"Downloading {count} image{'s' if count > 1 else ''}..."
-                        elif (count := api.full_checks_counter.count) > 0:
-                            text = f"Fetching {count} full thread{'s' if count > 1 else ''}..."
-                        elif (count := api.fast_checks_counter) > 0:
-                            text = f"Validating {count} cached item{'s' if count > 1 else ''}..."
-                        elif globals.last_update_check is None:
-                            text = "Checking for updates..."
-                        elif api.f95_ratelimit_forum._waiters or api.f95_ratelimit_attachments._waiters or api.f95_ratelimit_sleeping.count:
-                            text = f"Waiting for F95zone ratelimit..."
-                        elif (count := imagehelper.compress_counter) > 0:
-                            text = "Compressing images..." if count == 1 else f"Compressing {count} frames..."
+                        if lock.is_locked():
+                            # PIN lock (modules/lock.py): nothing of the library is drawn
+                            lock.draw_lock_screen(self, size)
                         else:
-                            text = self.watermark_text
-                        _3 = self.scaled(3)
-                        _6 = self.scaled(6)
-                        text_size = imgui.calc_text_size(text)
-                        text_x = size.x - text_size.x - _6
-                        text_y = size.y - text_size.y - _6
+                            sidebar_size = self.scaled(self.sidebar_size)
 
-                        # Sidebar
-                        imgui.same_line(spacing=imgui.style.item_spacing.x)
-                        imgui.begin_child("###sidebar_frame", width=sidebar_size - imgui.style.item_spacing.x + 1, height=-text_size.y)
-                        self.draw_sidebar()
-                        imgui.end_child()
+                            # Main pane
+                            imgui.begin_child("###main_frame", width=-sidebar_size)
+                            self.hovered_game = None
+                            # Tabbar
+                            self.draw_tabbar()
+                            # Games container
+                            match globals.settings.display_mode.value:
+                                case DisplayMode.list.value:
+                                    self.draw_games_list()
+                                case DisplayMode.grid.value:
+                                    self.draw_games_grid()
+                                case DisplayMode.kanban.value:
+                                    self.draw_games_kanban()
+                            # Bottombar
+                            self.draw_bottombar()
+                            imgui.end_child()
 
-                        # Status / watermark text
-                        imgui.set_cursor_screen_pos((text_x - _3, text_y))
-                        if imgui.invisible_button("", width=text_size.x + _6, height=text_size.y + _3):
-                            utils.push_popup(self.draw_about_popup)
-                        elif imgui.is_item_clicked(imgui.MOUSE_BUTTON_MIDDLE):
-                            callbacks.open_webpage(api.f95_host)
-                        imgui.set_cursor_screen_pos((text_x, text_y))
-                        imgui.text(text)
+                            # Prepare bottom status / watermark text (done before sidebar to get text offset from bottom of window)
+                            if (count := api.images_counter.count) > 0:
+                                text = f"Downloading {count} image{'s' if count > 1 else ''}..."
+                            elif (count := api.full_checks_counter.count) > 0:
+                                text = f"Fetching {count} full thread{'s' if count > 1 else ''}..."
+                            elif (count := api.fast_checks_counter) > 0:
+                                text = f"Validating {count} cached item{'s' if count > 1 else ''}..."
+                            elif globals.last_update_check is None:
+                                text = "Checking for updates..."
+                            elif api.f95_ratelimit_forum._waiters or api.f95_ratelimit_attachments._waiters or api.f95_ratelimit_sleeping.count:
+                                text = f"Waiting for F95zone ratelimit..."
+                            elif (count := imagehelper.compress_counter) > 0:
+                                text = "Compressing images..." if count == 1 else f"Compressing {count} frames..."
+                            else:
+                                text = self.watermark_text
+                            _3 = self.scaled(3)
+                            _6 = self.scaled(6)
+                            text_size = imgui.calc_text_size(text)
+                            text_x = size.x - text_size.x - _6
+                            text_y = size.y - text_size.y - _6
 
-                        # Popups
-                        open_popup_count = 0
-                        for popup in globals.popup_stack:
-                            opened, closed = popup()
-                            if closed:
-                                globals.popup_stack.remove(popup)
-                                globals.popup_stack_changed = True
-                            open_popup_count += opened
-                        # Popups are closed all at the end to allow stacking
-                        for _ in range(open_popup_count):
-                            imgui.end_popup()
+                            # Sidebar
+                            imgui.same_line(spacing=imgui.style.item_spacing.x)
+                            imgui.begin_child("###sidebar_frame", width=sidebar_size - imgui.style.item_spacing.x + 1, height=-text_size.y)
+                            self.draw_sidebar()
+                            imgui.end_child()
+
+                            # Status / watermark text
+                            imgui.set_cursor_screen_pos((text_x - _3, text_y))
+                            if imgui.invisible_button("", width=text_size.x + _6, height=text_size.y + _3):
+                                utils.push_popup(self.draw_about_popup)
+                            elif imgui.is_item_clicked(imgui.MOUSE_BUTTON_MIDDLE):
+                                callbacks.open_webpage(api.f95_host)
+                            imgui.set_cursor_screen_pos((text_x, text_y))
+                            imgui.text(text)
+
+                            # Popups
+                            open_popup_count = 0
+                            for popup in globals.popup_stack:
+                                opened, closed = popup()
+                                if closed:
+                                    globals.popup_stack.remove(popup)
+                                    globals.popup_stack_changed = True
+                                open_popup_count += opened
+                            # Popups are closed all at the end to allow stacking
+                            for _ in range(open_popup_count):
+                                imgui.end_popup()
 
                         # Close main window (technically popups are inside the window, and inside one another - this gives proper stacking order)
                         imgui.end()
@@ -4404,6 +4410,178 @@ class MainGUI():
             self.add_box_valid = False
             self.recalculate_ids = True
 
+    def open_library_settings(self):
+        """Library tools > Settings: every option of the added features, in a window wide enough for them."""
+        def content():
+            right_width = self.scaled(330)
+
+            def draw_settings_label(label: str, tooltip: str = None):
+                imgui.table_next_row()
+                imgui.table_next_column()
+                imgui.text(label)
+                if tooltip:
+                    imgui.same_line()
+                    self.draw_hover_text(tooltip)
+                imgui.table_next_column()
+
+            if imgui.begin_table("###library_settings", 2, imgui.TABLE_ROW_BACKGROUND):
+                imgui.table_setup_column("", imgui.TABLE_COLUMN_WIDTH_FIXED, self.scaled(210))
+                imgui.table_setup_column("", imgui.TABLE_COLUMN_WIDTH_FIXED, right_width + self.scaled(270))
+                p = installdate.prefs()
+                for key, label, tip in (
+                    ("hover_preview", "Hover slideshow:", "Thread screenshots play in the card when the mouse stays on a cover (grid view)."),
+                    ("shelf", "To play shelf:", "Row above the grid with the games updated since you last played them (and UPDATE / NEW badges)."),
+                    ("watch_downloads", "Watch downloads:", "Proposes Import Update when an archive named like one of your games finishes downloading."),
+                    ("cheats_default", "Cheats in Ren'Py games:", "Adds the developer console (Shift+O) to every Ren'Py game at each scan, new version folders too.\n"
+                                                                 "Right click > Disable Cheats on a game keeps it off for that game."),
+                    ("hero", "Continue banner:", "Wide banner above the grid with the game of this tab you played last: Play / Details."),
+                    ("game_colors", "Game colours:", "Card frame in the main colour of its banner, blurred banner behind the image of the info popup."),
+                    ("upscale", "Sharper banners:", "Banners narrower than 1600 px are enlarged once with Real-ESRGAN (graphics card, offline).\n"
+                                                    "The originals are kept: untick to see them again."),
+                ):
+                    draw_settings_label(label, tip)
+                    changed, value = imgui.checkbox(f"###lt_{key}", bool(p.get(key, True)))
+                    if changed:
+                        p[key] = value
+                        installdate.save_prefs()
+                        if key in ("upscale", "game_colors"):
+                            visuals.apply_all()
+                draw_settings_label("Download folders:", "Folders watched for downloaded archives, separated by ; (default: your Downloads folder).")
+                imgui.set_next_item_width(right_width)
+                changed, value = imgui.input_text("###lt_dirs", "; ".join(p.get("watch_dirs") or []), 1000)
+                if changed:
+                    p["watch_dirs"] = [d.strip().strip('"') for d in value.split(";") if d.strip()]
+                    installdate.save_prefs()
+                draw_settings_label("Lossless Scaling:", "Path of LosslessScaling.exe (empty = found in your Steam libraries).")
+                imgui.set_next_item_width(right_width)
+                changed, value = imgui.input_text("###lt_ls_path", p.get("lossless_path", ""), 400)
+                if changed:
+                    p["lossless_path"] = value.strip().strip('"')
+                    installdate.save_prefs()
+                draw_settings_label("LS hotkey / delay:", "The Scale hotkey set in Lossless Scaling (default ctrl+alt+s), and the seconds\n"
+                                    "the game window must stay in front before it is sent.")
+                imgui.set_next_item_width(right_width * 0.6)
+                changed, value = imgui.input_text("###lt_ls_key", p.get("lossless_hotkey", "ctrl+alt+s"), 40)
+                if changed:
+                    p["lossless_hotkey"] = value.strip().lower()
+                    installdate.save_prefs()
+                imgui.same_line()
+                imgui.set_next_item_width(right_width * 0.4 - imgui.style.item_spacing.x)
+                changed, value = imgui.input_float("###lt_ls_delay", float(p.get("lossless_delay", 4.0)), 0, 0, "%.0f s")
+                if changed:
+                    p["lossless_delay"] = max(1.0, min(60.0, value))
+                    installdate.save_prefs()
+                ls_exe = pctools.find_lossless()
+                draw_settings_label("LS found:", str(ls_exe or "Not found in your Steam libraries: set the path above."))
+                imgui.text("Yes" if ls_exe else "No")
+                draw_settings_label(
+                    "LS frame generation:",
+                    "Games set to 'frame generation' (right click > Display profile) use your Lossless Scaling profile with\n"
+                    "frame generation: Lossless Scaling picks it from the game's exe name. Copy this list and paste it in the\n"
+                    "filter of that profile (Lossless Scaling > profile > Edit), again after adding games."
+                )
+                if imgui.button("Copy filter###lt_ls_fg", width=right_width):
+                    callbacks.clipboard_copy(pctools.framegen_filter())
+                # Real-ESRGAN (sharper banners)
+                up_exe = visuals.find_upscaler()
+                draw_settings_label(
+                    "Real-ESRGAN:",
+                    "realesrgan-ncnn-vulkan.exe (github.com/xinntao/Real-ESRGAN, Releases, ...-windows.zip, unzipped).\n"
+                    "Empty = looked for in <F95Checker data>\\realesrgan and in your Downloads folder.\n"
+                    f"Now: {up_exe or 'not found'}"
+                )
+                imgui.set_next_item_width(right_width)
+                changed, value = imgui.input_text("###lt_up_path", p.get("upscale_path", ""), 400)
+                if changed:
+                    p["upscale_path"] = value.strip().strip('"')
+                    installdate.save_prefs()
+                draw_settings_label("Banner model:", "Photos / 3D renders suits most games; Drawings / anime for 2D art.\n"
+                                                     "Changing it enlarges every banner again.")
+                models = list(visuals.MODELS)
+                imgui.set_next_item_width(right_width)
+                current = models.index(p.get("upscale_model")) if p.get("upscale_model") in models else 0
+                changed, index = imgui.combo("###lt_up_model", current, [visuals.MODELS[m] for m in models])
+                if changed and models[index] != p.get("upscale_model"):
+                    p["upscale_model"] = models[index]
+                    installdate.save_prefs()
+                    visuals.redo_upscale()
+                    visuals.save_index()
+                    visuals.apply_all()
+                st = visuals.upscale_stats()
+                draw_settings_label("Banners:", "Enlarged / already sharp / animated (left as they are) / failed / waiting.\n"
+                                                "One at a time in the background, about a second each with the graphics card.")
+                imgui.text(f"{st['ok']} enlarged, {st['big']} sharp, {st['animated']} animated, {st['error']} failed, {st['todo']} waiting")
+                if st["error"]:
+                    imgui.same_line()
+                    if imgui.small_button("Retry###lt_up_retry"):
+                        visuals.retry_upscale_errors()
+                # Ren'Py preferences for every game
+                rp = installdate.renpy_prefs()
+                draw_settings_label(
+                    "Ren'Py preferences:",
+                    "Your usual settings in every Ren'Py game (zz_f95checker_prefs.rpy, added at each scan). Applied once,\n"
+                    "and only where the game is still at its default: what you change in a game stays.\n"
+                    "A changed setting here is applied once more in each game."
+                )
+                rp_changed, rp["on"] = imgui.checkbox("###lt_rp_on", rp["on"])
+                if rp["on"]:
+                    c, rp["skip_unseen"] = imgui.checkbox("Skip also unread text###lt_rp_skip", rp["skip_unseen"])
+                    rp_changed |= c
+                    for key, label, lo, hi in (("afm_time", "Auto-forward (1 fast .. 40 slow)", 1, 40), ("music", "Music volume %", 0, 100),
+                                               ("sound", "Sound volume %", 0, 100), ("voice", "Voice volume %", 0, 100)):
+                        keep = rp[key] is None
+                        c, keep_new = imgui.checkbox(f"keep the game's###lt_rp_keep_{key}", keep)
+                        rp_changed |= c
+                        if c:
+                            rp[key] = None if keep_new else (15 if key == "afm_time" else 70)
+                        if rp[key] is not None:
+                            imgui.same_line()
+                            imgui.set_next_item_width(right_width * 0.5)
+                            c, rp[key] = imgui.slider_int(f"{label}###lt_rp_{key}", int(rp[key]), lo, hi)
+                            rp_changed |= c
+                        else:
+                            imgui.same_line()
+                            imgui.text_disabled(label)
+                    modes = ["keep the game's", "windowed", "fullscreen"]
+                    index = 0 if rp["fullscreen"] is None else 2 if rp["fullscreen"] else 1
+                    imgui.set_next_item_width(right_width)
+                    c, index = imgui.combo("###lt_rp_full", index, modes)
+                    if c:
+                        rp["fullscreen"] = None if index == 0 else index == 2
+                        rp_changed = True
+                if rp_changed:
+                    installdate.save_prefs()
+                if imgui.button("Apply to all Ren'Py games now###lt_rp_apply", width=right_width):
+                    async def _apply_prefs():
+                        count = await asyncio.get_running_loop().run_in_executor(None, installdate.apply_renpy_prefs_all)
+                        utils.push_popup(msgbox.msgbox, "Ren'Py preferences", f"{count} Ren'Py game(s) updated.", MsgBox.info)
+                    async_thread.run(_apply_prefs())
+                ep = extras.prefs()
+                draw_settings_label("Discretion key:", "Anywhere in Windows: stops the toy, minimises the running games (and F95Checker),\n"
+                                                       "mutes the sound. Press again to get the games and the sound back.\n"
+                                                       "Examples: ctrl+alt+h, ctrl+shift+f12, pause. Empty = off.")
+                imgui.set_next_item_width(right_width * 0.6)
+                changed, value = imgui.input_text("###lt_discreet_key", ep["discreet_key"], 40)
+                if changed:
+                    ep["discreet_key"] = value.strip().lower()
+                    installdate.save_prefs()
+                imgui.same_line()
+                if imgui.button("Apply###lt_discreet_apply"):
+                    if ep["discreet_key"] and extras.parse_hotkey(ep["discreet_key"]) is None:
+                        utils.push_popup(msgbox.msgbox, "Discretion key", f"'{ep['discreet_key']}' is not a key combination F95Checker understands.", MsgBox.warn)
+                    else:
+                        extras.restart_hotkey()
+                for key, label in (("discreet_mute", "mute the sound"), ("discreet_hide_f95", "minimise F95Checker too")):
+                    imgui.same_line()
+                    changed, value = imgui.checkbox(f"{label}###lt_{key}", bool(ep[key]))
+                    if changed:
+                        ep[key] = value
+                        installdate.save_prefs()
+                lock.draw_settings(draw_settings_label, right_width)
+                imgui.end_table()
+
+        utils.push_popup(utils.popup, "Library tools settings", content, buttons=True, closable=True, outside=False, popup_uuid="library_settings")
+
     def draw_sidebar(self):
         set = globals.settings
         right_width = self.scaled(90)
@@ -4719,194 +4897,32 @@ class MainGUI():
             imgui.spacing()
 
         if draw_settings_section("Library tools"):
-            draw_settings_label("Statistics:", "Play time per week, top developers / tags, space per drive, engines, completion.")
-            if imgui.button("Open###lt_stats", width=right_width):
-                showcase.open_stats_popup()
-            draw_settings_label(
-                "Compression:",
-                "Windows' own compression of game folders (like CompactGUI): less space, games run as before, reversible.\n"
-                "Shows the estimated gain per game first. NTFS drives only."
-            )
-            if imgui.button("Open###lt_compress", width=right_width):
-                pctools.open_compression_popup()
-            p = installdate.prefs()
-            for key, label, tip in (
-                ("hover_preview", "Hover slideshow:", "Thread screenshots play in the card when the mouse stays on a cover (grid view)."),
-                ("shelf", "To play shelf:", "Row above the grid with the games updated since you last played them (and UPDATE / NEW badges)."),
-                ("watch_downloads", "Watch downloads:", "Proposes Import Update when an archive named like one of your games finishes downloading."),
-                ("cheats_default", "Cheats in Ren'Py games:", "Adds the developer console (Shift+O) to every Ren'Py game at each scan, new version folders too.\n"
-                                                             "Right click > Disable Cheats on a game keeps it off for that game."),
-                ("hero", "Continue banner:", "Wide banner above the grid with the game of this tab you played last: Play / Details."),
-                ("game_colors", "Game colours:", "Card frame in the main colour of its banner, blurred banner behind the image of the info popup."),
-                ("upscale", "Sharper banners:", "Banners narrower than 1600 px are enlarged once with Real-ESRGAN (graphics card, offline).\n"
-                                                "The originals are kept: untick to see them again."),
+            # Short labels and buttons only: the sidebar is narrow. Settings are in their own window.
+            for label, key, tip, action in (
+                ("Stats:", "stats", "Play time per week, top developers / tags, space per drive, engines, completion.", showcase.open_stats_popup),
+                ("Tonight:", "tonight", "What to play tonight? One of your installed, unfinished games, drawn by your tastes.", extras.open_tonight_popup),
+                ("Clean up:", "clean", "Archives already installed, Ren'Py caches, leftovers of interrupted imports.", extras.open_cleanup_popup),
+                ("Tidy up:", "tidy", "Puts games in the right category folder (HD GAMES, ANIME...), learnt from how you sort them.", lambda: pctools.open_tidy_popup()),
+                ("Compress:", "compress", "Windows' own compression of game folders (like CompactGUI), reversible.", pctools.open_compression_popup),
+                ("Drives:", "balance", "Moves the games you have not played for the longest time from the fullest drives\n"
+                                       "to the one with the most room (plan shown first).", pctools.open_balance_popup),
+                ("Engine:", "engine", "Identical Ren'Py engine files stored once per drive (hard links). Analyse first.", pctools.open_engine_popup),
+                ("Settings:", "settings", "Slideshow, shelf, banners, colours, cheats, Ren'Py preferences, Lossless Scaling,\n"
+                                          "Real-ESRGAN, discretion key, PIN lock...", self.open_library_settings),
             ):
                 draw_settings_label(label, tip)
-                changed, value = imgui.checkbox(f"###lt_{key}", bool(p.get(key, True)))
-                if changed:
-                    p[key] = value
-                    installdate.save_prefs()
-                    if key in ("upscale", "game_colors"):
-                        visuals.apply_all()
-            draw_settings_label("Download folders:", "Folders watched for downloaded archives, separated by ; (default: your Downloads folder).")
-            imgui.set_next_item_width(right_width)
-            changed, value = imgui.input_text("###lt_dirs", "; ".join(p.get("watch_dirs") or []), 1000)
-            if changed:
-                p["watch_dirs"] = [d.strip().strip('"') for d in value.split(";") if d.strip()]
-                installdate.save_prefs()
-            draw_settings_label("Lossless Scaling:", "Path of LosslessScaling.exe (empty = found in your Steam libraries).")
-            imgui.set_next_item_width(right_width)
-            changed, value = imgui.input_text("###lt_ls_path", p.get("lossless_path", ""), 400)
-            if changed:
-                p["lossless_path"] = value.strip().strip('"')
-                installdate.save_prefs()
-            draw_settings_label("LS hotkey / delay:", "The Scale hotkey set in Lossless Scaling (default ctrl+alt+s), and the seconds\n"
-                                "the game window must stay in front before it is sent.")
-            imgui.set_next_item_width(right_width * 0.6)
-            changed, value = imgui.input_text("###lt_ls_key", p.get("lossless_hotkey", "ctrl+alt+s"), 40)
-            if changed:
-                p["lossless_hotkey"] = value.strip().lower()
-                installdate.save_prefs()
-            imgui.same_line()
-            imgui.set_next_item_width(right_width * 0.4 - imgui.style.item_spacing.x)
-            changed, value = imgui.input_float("###lt_ls_delay", float(p.get("lossless_delay", 4.0)), 0, 0, "%.0f s")
-            if changed:
-                p["lossless_delay"] = max(1.0, min(60.0, value))
-                installdate.save_prefs()
-            ls_exe = pctools.find_lossless()
-            draw_settings_label("LS found:", str(ls_exe or "Not found in your Steam libraries: set the path above."))
-            imgui.text("Yes" if ls_exe else "No")
-            draw_settings_label(
-                "LS frame generation:",
-                "Games set to 'frame generation' (right click > Display profile) use your Lossless Scaling profile with\n"
-                "frame generation: Lossless Scaling picks it from the game's exe name. Copy this list and paste it in the\n"
-                "filter of that profile (Lossless Scaling > profile > Edit), again after adding games."
-            )
-            if imgui.button("Copy filter###lt_ls_fg", width=right_width):
-                callbacks.clipboard_copy(pctools.framegen_filter())
-            # Real-ESRGAN (sharper banners)
-            up_exe = visuals.find_upscaler()
-            draw_settings_label(
-                "Real-ESRGAN:",
-                "realesrgan-ncnn-vulkan.exe (github.com/xinntao/Real-ESRGAN, Releases, ...-windows.zip, unzipped).\n"
-                "Empty = looked for in <F95Checker data>\\realesrgan and in your Downloads folder.\n"
-                f"Now: {up_exe or 'not found'}"
-            )
-            imgui.set_next_item_width(right_width)
-            changed, value = imgui.input_text("###lt_up_path", p.get("upscale_path", ""), 400)
-            if changed:
-                p["upscale_path"] = value.strip().strip('"')
-                installdate.save_prefs()
-            draw_settings_label("Banner model:", "Photos / 3D renders suits most games; Drawings / anime for 2D art.\n"
-                                                 "Changing it enlarges every banner again.")
-            models = list(visuals.MODELS)
-            imgui.set_next_item_width(right_width)
-            current = models.index(p.get("upscale_model")) if p.get("upscale_model") in models else 0
-            changed, index = imgui.combo("###lt_up_model", current, [visuals.MODELS[m] for m in models])
-            if changed and models[index] != p.get("upscale_model"):
-                p["upscale_model"] = models[index]
-                installdate.save_prefs()
-                visuals.redo_upscale()
-                visuals.save_index()
-                visuals.apply_all()
-            st = visuals.upscale_stats()
-            draw_settings_label("Banners:", "Enlarged / already sharp / animated (left as they are) / failed / waiting.\n"
-                                            "One at a time in the background, about a second each with the graphics card.")
-            imgui.text(f"{st['ok']} enlarged, {st['big']} sharp, {st['animated']} animated, {st['error']} failed, {st['todo']} waiting")
-            if st["error"]:
-                imgui.same_line()
-                if imgui.small_button("Retry###lt_up_retry"):
-                    visuals.retry_upscale_errors()
-            # Ren'Py preferences for every game
-            rp = installdate.renpy_prefs()
-            draw_settings_label(
-                "Ren'Py preferences:",
-                "Your usual settings in every Ren'Py game (zz_f95checker_prefs.rpy, added at each scan). Applied once,\n"
-                "and only where the game is still at its default: what you change in a game stays.\n"
-                "A changed setting here is applied once more in each game."
-            )
-            rp_changed, rp["on"] = imgui.checkbox("###lt_rp_on", rp["on"])
-            if rp["on"]:
-                c, rp["skip_unseen"] = imgui.checkbox("Skip also unread text###lt_rp_skip", rp["skip_unseen"])
-                rp_changed |= c
-                for key, label, lo, hi in (("afm_time", "Auto-forward (1 fast .. 40 slow)", 1, 40), ("music", "Music volume %", 0, 100),
-                                           ("sound", "Sound volume %", 0, 100), ("voice", "Voice volume %", 0, 100)):
-                    keep = rp[key] is None
-                    c, keep_new = imgui.checkbox(f"keep the game's###lt_rp_keep_{key}", keep)
-                    rp_changed |= c
-                    if c:
-                        rp[key] = None if keep_new else (15 if key == "afm_time" else 70)
-                    if rp[key] is not None:
-                        imgui.same_line()
-                        imgui.set_next_item_width(right_width * 0.5)
-                        c, rp[key] = imgui.slider_int(f"{label}###lt_rp_{key}", int(rp[key]), lo, hi)
-                        rp_changed |= c
-                    else:
-                        imgui.same_line()
-                        imgui.text_disabled(label)
-                modes = ["keep the game's", "windowed", "fullscreen"]
-                index = 0 if rp["fullscreen"] is None else 2 if rp["fullscreen"] else 1
-                imgui.set_next_item_width(right_width)
-                c, index = imgui.combo("###lt_rp_full", index, modes)
-                if c:
-                    rp["fullscreen"] = None if index == 0 else index == 2
-                    rp_changed = True
-            if rp_changed:
-                installdate.save_prefs()
-            if imgui.button("Apply to all Ren'Py games now###lt_rp_apply", width=right_width):
-                async def _apply_prefs():
-                    count = await asyncio.get_running_loop().run_in_executor(None, installdate.apply_renpy_prefs_all)
-                    utils.push_popup(msgbox.msgbox, "Ren'Py preferences", f"{count} Ren'Py game(s) updated.", MsgBox.info)
-                async_thread.run(_apply_prefs())
-            # Extras (modules/extras.py) and shared Ren'Py engine
-            draw_settings_label("What to play tonight?", "Draws one of your installed, unfinished games, weighted by your tastes,\n"
-                                                        "updates since your last play and how long ago you played it.")
-            if imgui.button("Open###lt_tonight", width=right_width):
-                extras.open_tonight_popup()
-            draw_settings_label("Clean up:", "Archives in your download folders already installed, Ren'Py caches, leftovers of\n"
-                                             "interrupted imports. Shown first with their size; archives go to the recycle bin.")
-            if imgui.button("Open###lt_clean", width=right_width):
-                extras.open_cleanup_popup()
-            draw_settings_label("Ren'Py engine:", "Identical engine files of your Ren'Py games (renpy\\, lib\\) stored once per drive\n"
-                                                  "(hard links). Analyse shows the gain first; Undo makes separate copies again.")
-            if imgui.button("Open###lt_engine", width=right_width):
-                pctools.open_engine_popup()
-            ep = extras.prefs()
-            draw_settings_label("Discretion key:", "Anywhere in Windows: stops the toy, minimises the running games (and F95Checker),\n"
-                                                   "mutes the sound. Press again to get the games and the sound back.\n"
-                                                   "Examples: ctrl+alt+h, ctrl+shift+f12, pause. Empty = off.")
-            imgui.set_next_item_width(right_width * 0.6)
-            changed, value = imgui.input_text("###lt_discreet_key", ep["discreet_key"], 40)
-            if changed:
-                ep["discreet_key"] = value.strip().lower()
-                installdate.save_prefs()
-            imgui.same_line()
-            if imgui.button("Apply###lt_discreet_apply"):
-                if ep["discreet_key"] and extras.parse_hotkey(ep["discreet_key"]) is None:
-                    utils.push_popup(msgbox.msgbox, "Discretion key", f"'{ep['discreet_key']}' is not a key combination F95Checker understands.", MsgBox.warn)
-                else:
-                    extras.restart_hotkey()
-            for key, label in (("discreet_mute", "mute the sound"), ("discreet_hide_f95", "minimise F95Checker too")):
-                imgui.same_line()
-                changed, value = imgui.checkbox(f"{label}###lt_{key}", bool(ep[key]))
-                if changed:
-                    ep[key] = value
-                    installdate.save_prefs()
-            # Drive balance
-            draw_settings_label(
-                "Drives:",
-                "Moves the games you have not played for the longest time from the fullest drives to the one with\n"
-                "the most room (plan shown first, nothing moves without your OK)."
-            )
-            if imgui.button("Balance###lt_balance", width=right_width):
-                pctools.open_balance_popup()
-
+                if imgui.button(f"Open###lt_{key}", width=right_width):
+                    action()
+            if lock.enabled():
+                draw_settings_label("Lock:", "Locks F95Checker now (your PIN to come back).")
+                if imgui.button(f"{icons.lock} Lock###lt_lock_now", width=right_width):
+                    lock.lock_now()
             imgui.end_table()
             imgui.spacing()
 
         if draw_settings_section("Toy & Discover"):
             draw_settings_label(
-                "Connected toy:",
+                "Toy:",
                 "Intiface Central (Lovense Max 2...): connection, safety caps, emergency stop, patterns,\n"
                 "per-game sync (Ren'Py animations, gamepad rumble, audio).\n"
                 "Emergency stop anywhere: Pause key or Ctrl+Alt+End."
@@ -4914,14 +4930,14 @@ class MainGUI():
             if imgui.button("Panel###toy_panel", width=right_width):
                 toy.open_panel()
             draw_settings_label(
-                "Built-in toy support:",
+                "Built-in:",
                 "Checks the files of all your games for built-in Intiface / Buttplug or Lovense support.\n"
                 "Found games show in the Toy column (list view, right click a header to enable it)."
             )
             if imgui.button("Scan###toy_native", width=right_width):
                 async_thread.run(toy.scan_native_all())
             draw_settings_label(
-                "Animation scripts:",
+                "Scripts:",
                 "Analyses the animations of all your Ren'Py games (toy sync on) and writes their toy scripts.\n"
                 "Only the missing ones, several at once. Long the first time: cancel and restart at will, nothing is lost.\n"
                 "Progress at the top of the Toy panel."
@@ -4930,14 +4946,14 @@ class MainGUI():
                 async_thread.run(toy.generate_all_scripts())
                 toy.open_panel()
             draw_settings_label(
-                "Recommendations:",
+                "Discover:",
                 "Games you don't have yet, ranked by your tastes: tags of the games you rate high and play long,\n"
                 "developers you play, F95 rating and popularity. Uses F95zone Latest Updates (login needed)."
             )
             if imgui.button("Open###discover_reco", width=right_width):
                 discover.open_recommend_popup()
             draw_settings_label(
-                "Mods & extras:",
+                "Mods:",
                 "Mod / patch / walkthrough / extras links found in the download section of your installed games' threads."
             )
             if imgui.button("List###discover_mods", width=right_width):

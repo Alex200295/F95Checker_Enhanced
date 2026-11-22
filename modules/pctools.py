@@ -864,6 +864,228 @@ def open_balance_popup():
 
 
 # ---------------------------------------------------------------------------
+# Tidy up (Library tools > Tidy up): the right category folder for each game, learnt from how you sort them
+# ---------------------------------------------------------------------------
+# Your category folders (HD GAMES, ANIME, AI ANIMATED...) are the first-level folders of a library holding several
+# games. A small naive Bayes model learns which F95 tags / engine go in which category from the games already
+# sorted, then proposes a category for games lying directly in a library folder (newly extracted) and points out
+# the ones that look misfiled. Moving stays on the same drive: a folder rename, instant, dates and links kept.
+
+@dataclasses.dataclass(slots=True)
+class TidyMove:
+    game: Game
+    src: pathlib.Path
+    dst: pathlib.Path
+    current: str             # "" = not in a category
+    target: str
+    confidence: float
+    why: str
+    selected: bool = True
+    state: str = ""
+
+
+def _features(game: Game) -> list[str]:
+    feats = [f"tag:{getattr(t, 'text', str(t)).lower()}" for t in game.tags]
+    engine = installdate.local_engine(game) or getattr(getattr(game, "type", None), "name", "")
+    if engine:
+        feats.append(f"engine:{engine.lower()}")
+    return feats
+
+
+def _library_layout() -> list[tuple[pathlib.Path, set[str]]]:
+    return [(root, _categories(root)) for root in installdate.library_roots(globals.games.values())]
+
+
+def _placement(game: Game, layout) -> tuple[pathlib.Path, pathlib.Path, str] | None:
+    """(library root, folder to move, current category or '') of the game."""
+    for root, cats in layout:
+        unit = move_unit(game, root, cats)
+        if unit is not None:
+            rel = unit.relative_to(root).parts
+            return root, unit, rel[0] if len(rel) == 2 and rel[0] in cats else ""
+    return None
+
+
+def tidy_model(layout=None) -> tuple[dict, dict, set[str]]:
+    """(category -> games count, category -> {feature: count}, all features) from the sorted games."""
+    import collections
+    layout = layout if layout is not None else _library_layout()
+    priors, counts, vocab = collections.Counter(), {}, set()
+    for game in globals.games.values():
+        place = _placement(game, layout)
+        if place is None or not place[2]:
+            continue
+        cat = place[2].upper()
+        priors[cat] += 1
+        bucket = counts.setdefault(cat, collections.Counter())
+        for f in _features(game):
+            bucket[f] += 1
+            vocab.add(f)
+    return dict(priors), counts, vocab
+
+
+def predict_category(game: Game, model) -> list[tuple[str, float]]:
+    """[(category, probability)] best first."""
+    import math
+    priors, counts, vocab = model
+    total = sum(priors.values())
+    if not total:
+        return []
+    feats = [f for f in _features(game) if f in vocab]
+    scores = {}
+    for cat, n in priors.items():
+        bucket = counts.get(cat, {})
+        size = sum(bucket.values())
+        score = math.log(n / total)
+        for f in feats:
+            score += math.log((bucket.get(f, 0) + 1) / (size + len(vocab)))
+        scores[cat] = score
+    top = max(scores.values())
+    exp = {c: math.exp(v - top) for c, v in scores.items()}
+    norm = sum(exp.values())
+    return sorted(((c, e / norm) for c, e in exp.items()), key=lambda ce: -ce[1])
+
+
+def _why(game: Game, cat: str, model) -> str:
+    _, counts, _ = model
+    bucket = counts.get(cat, {})
+    best = sorted((f for f in _features(game) if bucket.get(f)), key=lambda f: -bucket[f])[:3]
+    return ", ".join(f.split(":", 1)[1] for f in best)
+
+
+def tidy_plan(misfiled_threshold: float = 0.9) -> list[TidyMove]:
+    layout = _library_layout()
+    model = tidy_model(layout)
+    moves = []
+    for game in globals.games.values():
+        if game.launch_state is not LaunchState.Idle:
+            continue
+        place = _placement(game, layout)
+        if place is None:
+            continue
+        root, unit, current = place
+        ranking = predict_category(game, model)
+        if not ranking:
+            break
+        target, confidence = ranking[0]
+        if current.upper() == target:
+            continue
+        if not current:
+            if confidence < 0.5:
+                continue
+            selected = confidence >= 0.6
+        else:
+            if confidence < misfiled_threshold or installdate.local_info().get(game.id, {}).get("tidy_ok") == current:
+                continue
+            selected = False                      # misfiled: proposed, never ticked for you
+        cats = next(c for r, c in layout if r == root)
+        folder = next((c for c in cats if c.upper() == target), target)   # keep your spelling on this drive
+        dst = root / folder / unit.name
+        if dst.exists():
+            continue
+        moves.append(TidyMove(game, unit, dst, current, folder, confidence, _why(game, target, model), selected))
+    return sorted(moves, key=lambda m: (bool(m.current), -m.confidence))
+
+
+def tidy_move(move: TidyMove) -> str:
+    """Same drive: rename the folder, then point the executables to it. '' or an error."""
+    if move.game.launch_state is not LaunchState.Idle:
+        return "the game is running"
+    if move.dst.exists():
+        return "a folder with that name is already there"
+    try:
+        move.dst.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(move.src, move.dst)
+    except OSError as exc:
+        return f"{exc} (a file in use? close the game and Explorer windows on it)"
+    _repoint(move.game, move.src, move.dst)
+    _log(f"Tidy: {move.game.name}: {move.src} -> {move.dst}")
+    return ""
+
+
+def tidy_keep(move: TidyMove):
+    """'It is in the right place': not proposed again while it stays in this category."""
+    installdate.local_info().setdefault(move.game.id, {})["tidy_ok"] = move.current
+    installdate.save_local_info()
+
+
+def auto_tidy(games=None) -> list[str]:
+    """After a scan, option "Tidy up new games by itself": only games lying directly in a library folder,
+    sure enough (>= 80 %). Blocking (folder renames)."""
+    if not prefs().get("tidy_auto"):
+        return []
+    done = []
+    wanted = {g.id for g in games} if games else None
+    for move in tidy_plan():
+        if move.current or move.confidence < 0.8 or (wanted is not None and move.game.id not in wanted):
+            continue
+        if not tidy_move(move):
+            done.append(f"{move.game.name} -> {move.target}")
+    return done
+
+
+def open_tidy_popup():
+    import imgui
+    state = {"moves": tidy_plan(), "show_misfiled": False}
+
+    def content():
+        scaled = globals.gui.scaled if globals.gui else (lambda x: x)
+        imgui.text_disabled("Categories learnt from the games you already sorted (their F95 tags and engine).\n"
+                            "Moves stay on the same drive (a rename: instant, dates and links kept). Close the games first.")
+        p = prefs()
+        changed, value = imgui.checkbox("Tidy up new games by myself after each scan (only when sure: 80 % and more)###tidy_auto",
+                                        bool(p.get("tidy_auto")))
+        if changed:
+            p["tidy_auto"] = value
+            installdate.save_prefs()
+        _, state["show_misfiled"] = imgui.checkbox("Also show the games that look misfiled###tidy_mis", state["show_misfiled"])
+        moves = [m for m in state["moves"] if state["show_misfiled"] or not m.current]
+        chosen = [m for m in moves if m.selected and not m.state]
+        if not moves:
+            imgui.text("Everything is in its place.")
+        elif chosen and imgui.button(f"Move {len(chosen)} game(s)###tidy_go"):
+            for m in chosen:
+                m.state = tidy_move(m) or "done"
+            async_thread.run(installdate.scan_library(*[m.game for m in chosen if m.state == "done"], manual=False))
+        imgui.same_line()
+        if imgui.button("Refresh###tidy_refresh"):
+            state["moves"] = tidy_plan()
+        flags = imgui.TABLE_SCROLL_Y | imgui.TABLE_ROW_BACKGROUND | imgui.TABLE_BORDERS_INNER_HORIZONTAL
+        if moves and imgui.begin_table("###tidy_table", 6, flags, outer_size_height=scaled(400)):
+            for name in ("", "Game", "Now", "Goes to", "Sure", "Because of / state"):
+                imgui.table_setup_column(name)
+            imgui.table_headers_row()
+            for i, m in enumerate(moves):
+                imgui.table_next_row()
+                imgui.table_next_column()
+                if not m.state:
+                    _, m.selected = imgui.checkbox(f"###tidy_sel_{i}", m.selected)
+                imgui.table_next_column()
+                imgui.text(m.game.name)
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(f"{m.src}\n-> {m.dst}")
+                imgui.table_next_column()
+                imgui.text(m.current or "(library root)")
+                imgui.table_next_column()
+                imgui.text(m.target)
+                imgui.table_next_column()
+                imgui.text(f"{m.confidence * 100:.0f} %")
+                imgui.table_next_column()
+                if m.state:
+                    imgui.text(m.state)
+                else:
+                    imgui.text(m.why)
+                    if m.current:
+                        imgui.same_line()
+                        if imgui.small_button(f"Right place###tidy_ok_{i}"):
+                            tidy_keep(m)
+                            m.state = "kept"
+            imgui.end_table()
+
+    utils.push_popup(utils.popup, "Tidy up", content, buttons=True, closable=True, outside=False, popup_uuid="pctools_tidy")
+
+
+# ---------------------------------------------------------------------------
 # Shared Ren'Py engine (Library tools > Ren'Py engine: Analyse / Share / Undo)
 # ---------------------------------------------------------------------------
 # Every Ren'Py game carries its own copy of the engine (renpy\ and lib\), often identical between games of the

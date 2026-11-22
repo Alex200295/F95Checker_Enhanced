@@ -826,6 +826,12 @@ async def scan_library(*games: Game, manual=True, reserved=False):
         await loop.run_in_executor(None, toy.ensure_hooks, games)
     except Exception:
         _log(f"Toy sync scripts: {error.traceback()}")
+    try:
+        from modules import pctools  # pctools imports this module
+        for line in await loop.run_in_executor(None, pctools.auto_tidy, games):
+            report.exe_relocated.append(f"tidied up: {line}")
+    except Exception:
+        _log(f"Tidy up: {error.traceback()}")
     if globals.gui:
         globals.gui.recalculate_ids = True
     new_old_versions = [old for old in report.old_versions if str(old.path) not in _announced_old_versions]
