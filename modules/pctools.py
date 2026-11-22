@@ -28,6 +28,8 @@ import os
 import pathlib
 import random
 import re
+import shutil
+import stat
 import subprocess
 import time
 import zlib
@@ -480,6 +482,387 @@ def open_compression_popup():
 
 
 # ---------------------------------------------------------------------------
+# Drive balance (Library tools > Drives: Balance)
+# ---------------------------------------------------------------------------
+# Plan: on every drive below the free space you want, the games you have not played for the longest time go to
+# the drive with the most room left. Move: copy (dates kept, creation date included, so Installed On does not
+# change), check (same number of files, same bytes), executables updated, then the original folder is deleted.
+# DLSS 5 links are removed before and put back from the kit of the new drive; compressed games are compressed again.
+
+@dataclasses.dataclass(slots=True)
+class Drive:
+    key: str
+    root: pathlib.Path       # library folder on this drive
+    total: int
+    free: int
+    planned_out: int = 0
+    planned_in: int = 0
+
+    @property
+    def free_after(self) -> int:
+        return self.free + self.planned_out - self.planned_in
+
+
+@dataclasses.dataclass(slots=True)
+class Move:
+    game: Game
+    src: pathlib.Path        # folder moved: the game's folder under the library (or under its category)
+    dst: pathlib.Path
+    size: int
+    selected: bool = True
+    state: str = ""          # "" / "moving" / "done" / error
+
+
+@dataclasses.dataclass(slots=True)
+class BalanceJob:
+    running: bool = False
+    cancel: bool = False
+    current: str = ""
+    copied: int = 0
+    to_copy: int = 0
+    done: int = 0
+    log: list = dataclasses.field(default_factory=list)
+
+
+balance_job = BalanceJob()
+
+
+def _drive_key(path: pathlib.Path) -> str:
+    drive = os.path.splitdrive(str(path))[0]
+    return os.path.normcase(drive) if drive else os.path.normcase(str(path))   # no drive letter (tests): one per root
+
+
+def _usage(path: pathlib.Path):
+    return shutil.disk_usage(path)
+
+
+def drives() -> list[Drive]:
+    """One library folder per drive (the one with the most games), with its space."""
+    counts: dict[str, dict[str, int]] = {}
+    roots = installdate.library_roots(globals.games.values())
+    for game in globals.games.values():
+        exe = installdate._main_exe(game)
+        for root in roots:
+            if exe is not None and root in exe.parents:
+                counts.setdefault(_drive_key(root), {}).setdefault(str(root), 0)
+                counts[_drive_key(root)][str(root)] += 1
+    result = []
+    for key, per_root in counts.items():
+        root = pathlib.Path(max(per_root, key=per_root.get))
+        try:
+            usage = _usage(root)
+        except OSError:
+            continue
+        result.append(Drive(key, root, usage.total, usage.free))
+    return sorted(result, key=lambda d: str(d.root).lower())
+
+
+def move_unit(game: Game, root: pathlib.Path, categories: set[str]) -> pathlib.Path | None:
+    """Folder to move for this game: <root>/<game folder> or <root>/<category>/<game folder>."""
+    exe = installdate._main_exe(game)
+    if exe is None or root not in exe.parents:
+        return None
+    parts = exe.relative_to(root).parts
+    if len(parts) < 2:
+        return None
+    unit = root / parts[0] / parts[1] if len(parts) >= 3 and parts[0] in categories else root / parts[0]
+    if installdate._in_use_by(unit, ignore=game):
+        return None              # another game's executable is inside: not a single-game folder
+    return unit
+
+
+def _categories(root: pathlib.Path) -> set[str]:
+    """First-level folders of a library holding several games (HD GAMES, ANIME...)."""
+    children: dict[str, set[str]] = {}
+    for game in globals.games.values():
+        exe = installdate._main_exe(game)
+        if exe is not None and root in exe.parents:
+            parts = exe.relative_to(root).parts
+            if len(parts) >= 3:
+                children.setdefault(parts[0], set()).add(parts[1])
+    return {name for name, subs in children.items() if len(subs) >= 2 or (name.upper() == name and not re.search(r"\d", name))}
+
+
+def _dlss_bytes(game: Game) -> int:
+    folder = dlss5_folder(game)
+    if folder is None or dlss5_state(game) != "installed":
+        return 0
+    total = 0
+    for rel in DLSS5_LINKED:
+        with contextlib.suppress(OSError):
+            total += (folder / rel).stat().st_size
+    return total
+
+
+def make_plan(min_free_pct: float, margin: int = 2 * 1024 ** 3) -> tuple[list[Drive], list[Move]]:
+    ds = drives()
+    if len(ds) < 2:
+        return ds, []
+    target = {d.key: int(d.total * min_free_pct / 100) for d in ds}
+    moves: list[Move] = []
+    for src in sorted(ds, key=lambda d: d.free / max(d.total, 1)):
+        if src.free_after >= target[src.key]:
+            continue
+        categories = _categories(src.root)
+        candidates = []
+        for game in globals.games.values():
+            if game.launch_state is not LaunchState.Idle:
+                continue
+            unit = move_unit(game, src.root, categories)
+            if unit is None:
+                continue
+            size = max(0, installdate.local_size(game) - _dlss_bytes(game))
+            if size <= 0:
+                continue
+            last = max(game.last_launched.value or 0, game.installed_on or 0)
+            candidates.append((last, -size, game, unit, size))
+        candidates.sort(key=lambda c: (c[0], c[1]))           # longest unplayed first, then biggest
+        for _, _, game, unit, size in candidates:
+            if src.free_after >= target[src.key]:
+                break
+            dests = [d for d in ds if d is not src and d.free_after - size >= target[d.key] + margin]
+            if not dests:
+                continue
+            dest = max(dests, key=lambda d: d.free_after - target[d.key])
+            dst = dest.root / unit.relative_to(src.root)
+            if dst.exists():
+                continue
+            moves.append(Move(game, unit, dst, size))
+            src.planned_out += size
+            dest.planned_in += size
+    return ds, moves
+
+
+def _set_birthtime(path: pathlib.Path, birth: float | None):
+    """Windows: copies keep their creation date (else Installed On would become the copy date)."""
+    if birth is None or globals.os is not Os.Windows:
+        return
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    handle = kernel32.CreateFileW(str(path), 0x100, 0, None, 3, 0x02000000, None)   # FILE_WRITE_ATTRIBUTES, OPEN_EXISTING, BACKUP_SEMANTICS
+    if not handle or handle == wintypes.HANDLE(-1).value:
+        return
+    try:
+        value = int(birth * 10_000_000) + 116444736000000000
+        created = wintypes.FILETIME(value & 0xFFFFFFFF, value >> 32)
+        kernel32.SetFileTime(handle, ctypes.byref(created), None, None)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _tree_stats(folder: pathlib.Path) -> tuple[int, int]:
+    count = total = 0
+    for current, _, files in os.walk(folder):
+        for name in files:
+            with contextlib.suppress(OSError):
+                total += os.stat(os.path.join(current, name)).st_size
+                count += 1
+    return count, total
+
+
+def _copy_tree(src: pathlib.Path, dst: pathlib.Path, job: BalanceJob):
+    for current, dirs, files in os.walk(src):
+        rel = pathlib.Path(current).relative_to(src)
+        target_dir = dst / rel
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for name in files:
+            source = pathlib.Path(current) / name
+            target = target_dir / name
+            st = source.stat()
+            shutil.copy2(source, target)
+            _set_birthtime(target, getattr(st, "st_birthtime", None))
+            job.copied += st.st_size
+    for current, dirs, _ in os.walk(src):
+        for name in dirs:                                   # folder dates too (some games are dated by folder)
+            with contextlib.suppress(OSError):
+                source = pathlib.Path(current) / name
+                st = source.stat()
+                os.utime(dst / source.relative_to(src), (st.st_atime, st.st_mtime))
+
+
+def _force_remove(func, path, _exc):
+    with contextlib.suppress(OSError):
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+
+
+def _copy_and_check(move: Move, job: BalanceJob) -> str:
+    """Blocking part: copy + check. The original stays until the caller deletes it. '' or an error."""
+    exe = installdate._main_exe(move.game)
+    if exe is not None and importupdate._locked(exe):
+        return "the game is running"
+    count, size = _tree_stats(move.src)
+    job.to_copy, job.copied = size, 0
+    existing = next(p for p in [move.dst, *move.dst.parents] if p.exists())
+    free = _usage(existing).free
+    if size + 512 * 1024 ** 2 > free:
+        return f"not enough space on the destination ({installdate.size_display(free)} free)"
+    try:
+        _copy_tree(move.src, move.dst, job)
+        if _tree_stats(move.dst) != (count, size):
+            raise OSError("the copy does not match the original (files or bytes)")
+    except Exception as exc:
+        shutil.rmtree(move.dst, onexc=_force_remove)
+        return f"{type(exc).__name__}: {exc}"
+    return ""
+
+
+def _repoint(game: Game, src: pathlib.Path, dst: pathlib.Path):
+    """Executables and local data of the game: src -> dst."""
+    base = installdate._exe_dir()
+    new = []
+    for executable in game.executables:
+        path = installdate._abs_exe(executable, base)
+        if path is not None and src in path.parents:
+            path = dst / path.relative_to(src)
+            if base and base in path.parents:
+                path = path.relative_to(base)
+            new.append(path.as_posix())
+        else:
+            new.append(executable)
+    game.executables = new          # saved to the database by Game.__setattr__
+    game.validate_executables()
+    info = installdate.local_info().get(game.id)
+    if isinstance(info, dict):
+        for key, value in list(info.items()):
+            if not isinstance(value, str) or not value:
+                continue
+            path = pathlib.Path(value)
+            if path == src or src in path.parents:
+                info[key] = str(dst / path.relative_to(src))
+        installdate.save_local_info()
+
+
+async def run_balance(moves: list[Move]):
+    job = balance_job
+    if job.running:
+        return
+    job.running, job.cancel, job.done = True, False, 0
+    loop = asyncio.get_running_loop()
+    try:
+        for move in moves:
+            if not move.selected or move.state == "done":
+                continue
+            if job.cancel:
+                break
+            game = move.game
+            job.current = game.name
+            move.state = "moving"
+            if game.launch_state is not LaunchState.Idle:
+                move.state = "the game is running"
+                continue
+            had_dlss = dlss5_state(game) == "installed"
+            reshade_on = reshade_enabled(game)
+            if had_dlss and (error_text := dlss5_remove(game)):
+                move.state = f"DLSS 5 removal: {error_text}"
+                continue
+            was_compressed = is_compressed(game)
+            error_text = await loop.run_in_executor(None, _copy_and_check, move, job)
+            if error_text:
+                move.state = error_text
+                if had_dlss and not dlss5_install(game) and reshade_on is False:
+                    set_reshade(game, False)
+                job.log.append(f"{game.name}: {error_text}")
+                continue
+            _repoint(game, move.src, move.dst)
+            await loop.run_in_executor(None, lambda: shutil.rmtree(move.src, onexc=_force_remove))
+            if move.src.exists():
+                job.log.append(f"{game.name}: moved, but some files of the old folder could not be deleted: {move.src}")
+            if had_dlss:
+                if error_text := dlss5_install(game):
+                    job.log.append(f"{game.name}: DLSS 5 not put back: {error_text}")
+                elif reshade_on is False:
+                    set_reshade(game, False)          # it was switched off: keep it off
+            if was_compressed:
+                installdate.local_info().get(game.id, {}).pop("compressed", None)
+                await compress_game(game, quiet=True)
+            move.state = "done"
+            job.done += 1
+            job.log.append(f"{game.name}: {move.src} -> {move.dst} ({installdate.size_display(move.size)})")
+            _log(f"Moved {game.name}: {move.src} -> {move.dst}")
+        await installdate.scan_library(*[m.game for m in moves if m.state == "done"], manual=False)
+    finally:
+        job.running = False
+        job.current = ""
+
+
+def open_balance_popup():
+    import imgui
+    state = {"pct": 10.0, "drives": None, "moves": []}
+
+    def plan():
+        state["drives"], state["moves"] = make_plan(state["pct"])
+
+    plan()
+
+    def content():
+        job = balance_job
+        scaled = globals.gui.scaled if globals.gui else (lambda x: x)
+        imgui.text_disabled("Games you have not played for the longest time move from the fullest drives to the one with the most room.\n"
+                            "Each game is copied (dates kept), checked, its executables updated, then its old folder is DELETED.\n"
+                            "Saves inside the game folder move with it; DLSS 5 and compression are put back on the new drive.")
+        imgui.set_next_item_width(scaled(200))
+        changed, value = imgui.slider_float("Free space wanted on each drive###bal_pct", state["pct"], 3.0, 30.0, "%.0f %%")
+        if changed:
+            state["pct"] = value
+        imgui.same_line()
+        if not job.running and imgui.button("Make the plan###bal_plan"):
+            plan()
+        for d in state["drives"] or []:
+            used = 1 - d.free / max(d.total, 1)
+            after = 1 - d.free_after / max(d.total, 1)
+            imgui.text(f"{str(d.root):<28}")
+            imgui.same_line(scaled(230))
+            imgui.progress_bar(used, (scaled(220), 0), f"{installdate.size_display(d.free)} free now")
+            imgui.same_line()
+            imgui.progress_bar(after, (scaled(220), 0), f"{installdate.size_display(d.free_after)} free after")
+        moves = state["moves"]
+        if not moves:
+            imgui.text("Nothing to move: every drive has the free space wanted (or no other drive has room).")
+            return
+        chosen = [m for m in moves if m.selected and m.state != "done"]
+        total = sum(m.size for m in chosen)
+        if job.running:
+            pct = job.copied / job.to_copy if job.to_copy else 0
+            imgui.progress_bar(pct, (scaled(460), 0), f"{job.current}: {installdate.size_display(job.copied)} / {installdate.size_display(job.to_copy)}")
+            imgui.same_line()
+            if imgui.small_button("Stop after this game###bal_stop"):
+                job.cancel = True
+        elif chosen and imgui.button(f"Move {len(chosen)} game(s), {installdate.size_display(total)}, and delete their old folders###bal_go"):
+            async_thread.run(run_balance(moves))
+        for line in job.log[-5:]:
+            imgui.text_disabled(line)
+        flags = imgui.TABLE_SCROLL_Y | imgui.TABLE_ROW_BACKGROUND | imgui.TABLE_BORDERS_INNER_HORIZONTAL
+        if imgui.begin_table("###bal_table", 6, flags, outer_size_height=scaled(380)):
+            for name in ("", "Game", "Size", "Last played", "From -> to", "State"):
+                imgui.table_setup_column(name)
+            imgui.table_headers_row()
+            for i, m in enumerate(moves):
+                imgui.table_next_row()
+                imgui.table_next_column()
+                if m.state in ("", ) and not job.running:
+                    changed, m.selected = imgui.checkbox(f"###bal_sel_{i}", m.selected)
+                imgui.table_next_column()
+                imgui.text(m.game.name)
+                imgui.table_next_column()
+                imgui.text(installdate.size_display(m.size))
+                imgui.table_next_column()
+                last = m.game.last_launched.value
+                imgui.text(time.strftime("%d/%m/%Y", time.localtime(last)) if last else "never")
+                imgui.table_next_column()
+                imgui.text(f"{_drive_key(m.src).upper()} -> {_drive_key(m.dst).upper()}")
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(f"{m.src}\n-> {m.dst}")
+                imgui.table_next_column()
+                imgui.text(m.state)
+            imgui.end_table()
+
+    utils.push_popup(utils.popup, "Drive balance", content, buttons=True, closable=True, outside=False, popup_uuid="pctools_balance")
+
+
+# ---------------------------------------------------------------------------
 # Display profile: Lossless Scaling, ReShade
 # ---------------------------------------------------------------------------
 
@@ -489,8 +872,22 @@ RESHADE_DLLS = ("dxgi.dll", "d3d9.dll", "d3d10.dll", "d3d11.dll", "d3d12.dll", "
 def display_cfg(game: Game) -> dict:
     cfg = prefs()["display"].setdefault(str(game.id), {})
     cfg.setdefault("lossless", False)
+    cfg.setdefault("ls_mode", "scale")       # "scale" / "framegen": which Lossless Scaling profile the game is in
     cfg.setdefault("reshade", None)          # None = leave as it is, True / False = force at launch
     return cfg
+
+
+def framegen_filter() -> str:
+    """Exe names of the games set to "frame generation", as Lossless Scaling wants them in a profile filter
+    (game1.exe; game2.exe). The profile with frame generation is chosen by LS from the game's exe name."""
+    names = []
+    for game in globals.games.values():
+        cfg = prefs()["display"].get(str(game.id))
+        if isinstance(cfg, dict) and cfg.get("lossless") and cfg.get("ls_mode") == "framegen":
+            exe = installdate._main_exe(game)
+            if exe is not None and exe.name not in names:
+                names.append(exe.name)
+    return "; ".join(sorted(names, key=str.lower))
 
 
 def _steam_libraries() -> list[pathlib.Path]:
@@ -832,10 +1229,24 @@ def draw_context_menu(game: Game):
         return
     if imgui.begin_menu(f"{icons.monitor_screenshot} Display profile"):
         cfg = display_cfg(game)
-        changed, value = imgui.checkbox("Lossless Scaling with this game###disp_ls", cfg["lossless"])
-        if changed:
-            cfg["lossless"] = value
-            installdate.save_prefs()
+        imgui.text("Lossless Scaling:")
+        current = "off" if not cfg["lossless"] else cfg["ls_mode"]
+        for key, label in (("off", "off"), ("scale", "scaling"), ("framegen", "frame generation (smoother animations)")):
+            if imgui.radio_button(f"{label}###disp_ls_{key}", current == key):
+                cfg["lossless"] = key != "off"
+                if key != "off":
+                    cfg["ls_mode"] = key
+                installdate.save_prefs()
+        if cfg["lossless"] and cfg["ls_mode"] == "framegen":
+            imgui.text_disabled("Needs your Lossless Scaling profile with frame generation to list this exe in its filter\n"
+                                "(Library tools > LS frame generation > Copy filter, then paste it in that profile).")
+            exe = installdate._main_exe(game)
+            if exe is not None and imgui.selectable(f"Copy the exe name ({exe.name})###disp_ls_copy", False)[0]:
+                from modules import callbacks
+                callbacks.clipboard_copy(exe.name)
+            if dlss5_state(game) in ("installed", "other") and reshade_enabled(game) and cfg["reshade"] is not False:
+                imgui.text_colored("DLSS 5 is on in this game: the RTX 3060 will not keep up with both.\n"
+                                   "Choose ReShade 'off at launch' below to play with frame generation.", 1.0, 0.65, 0.2)
         state = reshade_enabled(game)
         if state is None:
             imgui.text_disabled("ReShade: not installed in this game")

@@ -77,6 +77,7 @@ from modules import (
     showcase,
     toy,
     utils,
+    visuals,
     webview,
     wine,
 )
@@ -1016,6 +1017,7 @@ class MainGUI():
                         or self.new_styles
                         or api.updating
                         or showcase.needs_redraw()
+                        or visuals.needs_redraw()
                     )
                     if draw:
                         draw_next = max(draw_next, imgui.io.delta_time + 1.0)  # Draw for at least next half second
@@ -2386,6 +2388,11 @@ class MainGUI():
                     margin_x = 0
                     margin_y = (out_height - height) / 2
                 prev_pos = imgui.get_cursor_pos()
+                # Empty sides: blurred copy of the banner behind it (modules/visuals.py)
+                blurred = visuals.blurred_image(game) if (margin_x > 1 or margin_y > 1) else None
+                if blurred is not None and not blurred.missing and not blurred.error:
+                    blurred.render(out_width, out_height, *blurred.crop_to_ratio(out_width / out_height, fit=False), rounding=rounding)
+                    imgui.set_cursor_pos(prev_pos)
                 imgui.set_cursor_pos((prev_pos.x + margin_x, prev_pos.y + margin_y))
                 image_pos = imgui.get_cursor_screen_pos()
 
@@ -4186,7 +4193,11 @@ class MainGUI():
                 )
                 imgui.pop_alpha()
             else:
-                draw_list.add_rect_filled(*rect_min, *rect_max, bg_col, rounding=rounding, flags=imgui.DRAW_ROUND_CORNERS_ALL)
+                # Tint and frame in the main colour of the banner (modules/visuals.py)
+                tint = visuals.card_colors(game)
+                draw_list.add_rect_filled(*rect_min, *rect_max, tint[0] if tint else bg_col, rounding=rounding, flags=imgui.DRAW_ROUND_CORNERS_ALL)
+                if tint:
+                    draw_list.add_rect(*rect_min, *rect_max, tint[1], rounding=rounding, flags=imgui.DRAW_ROUND_CORNERS_ALL, thickness=self.scaled(1.5))
         else:
             imgui.dummy(cell_width, cell_height)
         draw_list.channels_merge()
@@ -4202,6 +4213,7 @@ class MainGUI():
             column_count -= 1
         expand = cell_width > min_expand_width
         img_height = cell_width / globals.settings.cell_image_ratio
+        visuals.draw_hero(self, self.show_games_ids[self.current_tab])
         showcase.draw_shelf(self, self.show_games_ids[self.current_tab])
         imgui.push_style_var(imgui.STYLE_CELL_PADDING, (padding, padding))
         if imgui.begin_table(
@@ -4718,12 +4730,18 @@ class MainGUI():
                 ("watch_downloads", "Watch downloads:", "Proposes Import Update when an archive named like one of your games finishes downloading."),
                 ("cheats_default", "Cheats in Ren'Py games:", "Adds the developer console (Shift+O) to every Ren'Py game at each scan, new version folders too.\n"
                                                              "Right click > Disable Cheats on a game keeps it off for that game."),
+                ("hero", "Continue banner:", "Wide banner above the grid with the game of this tab you played last: Play / Details."),
+                ("game_colors", "Game colours:", "Card frame in the main colour of its banner, blurred banner behind the image of the info popup."),
+                ("upscale", "Sharper banners:", "Banners narrower than 1600 px are enlarged once with Real-ESRGAN (graphics card, offline).\n"
+                                                "The originals are kept: untick to see them again."),
             ):
                 draw_settings_label(label, tip)
                 changed, value = imgui.checkbox(f"###lt_{key}", bool(p.get(key, True)))
                 if changed:
                     p[key] = value
                     installdate.save_prefs()
+                    if key in ("upscale", "game_colors"):
+                        visuals.apply_all()
             draw_settings_label("Download folders:", "Folders watched for downloaded archives, separated by ; (default: your Downloads folder).")
             imgui.set_next_item_width(right_width)
             changed, value = imgui.input_text("###lt_dirs", "; ".join(p.get("watch_dirs") or []), 1000)
@@ -4752,6 +4770,96 @@ class MainGUI():
             ls_exe = pctools.find_lossless()
             draw_settings_label("LS found:", str(ls_exe or "Not found in your Steam libraries: set the path above."))
             imgui.text("Yes" if ls_exe else "No")
+            draw_settings_label(
+                "LS frame generation:",
+                "Games set to 'frame generation' (right click > Display profile) use your Lossless Scaling profile with\n"
+                "frame generation: Lossless Scaling picks it from the game's exe name. Copy this list and paste it in the\n"
+                "filter of that profile (Lossless Scaling > profile > Edit), again after adding games."
+            )
+            if imgui.button("Copy filter###lt_ls_fg", width=right_width):
+                callbacks.clipboard_copy(pctools.framegen_filter())
+            # Real-ESRGAN (sharper banners)
+            up_exe = visuals.find_upscaler()
+            draw_settings_label(
+                "Real-ESRGAN:",
+                "realesrgan-ncnn-vulkan.exe (github.com/xinntao/Real-ESRGAN, Releases, ...-windows.zip, unzipped).\n"
+                "Empty = looked for in <F95Checker data>\\realesrgan and in your Downloads folder.\n"
+                f"Now: {up_exe or 'not found'}"
+            )
+            imgui.set_next_item_width(right_width)
+            changed, value = imgui.input_text("###lt_up_path", p.get("upscale_path", ""), 400)
+            if changed:
+                p["upscale_path"] = value.strip().strip('"')
+                installdate.save_prefs()
+            draw_settings_label("Banner model:", "Photos / 3D renders suits most games; Drawings / anime for 2D art.\n"
+                                                 "Changing it enlarges every banner again.")
+            models = list(visuals.MODELS)
+            imgui.set_next_item_width(right_width)
+            current = models.index(p.get("upscale_model")) if p.get("upscale_model") in models else 0
+            changed, index = imgui.combo("###lt_up_model", current, [visuals.MODELS[m] for m in models])
+            if changed and models[index] != p.get("upscale_model"):
+                p["upscale_model"] = models[index]
+                installdate.save_prefs()
+                visuals.redo_upscale()
+                visuals.save_index()
+                visuals.apply_all()
+            st = visuals.upscale_stats()
+            draw_settings_label("Banners:", "Enlarged / already sharp / animated (left as they are) / failed / waiting.\n"
+                                            "One at a time in the background, about a second each with the graphics card.")
+            imgui.text(f"{st['ok']} enlarged, {st['big']} sharp, {st['animated']} animated, {st['error']} failed, {st['todo']} waiting")
+            if st["error"]:
+                imgui.same_line()
+                if imgui.small_button("Retry###lt_up_retry"):
+                    visuals.retry_upscale_errors()
+            # Ren'Py preferences for every game
+            rp = installdate.renpy_prefs()
+            draw_settings_label(
+                "Ren'Py preferences:",
+                "Your usual settings in every Ren'Py game (zz_f95checker_prefs.rpy, added at each scan). Applied once,\n"
+                "and only where the game is still at its default: what you change in a game stays.\n"
+                "A changed setting here is applied once more in each game."
+            )
+            rp_changed, rp["on"] = imgui.checkbox("###lt_rp_on", rp["on"])
+            if rp["on"]:
+                c, rp["skip_unseen"] = imgui.checkbox("Skip also unread text###lt_rp_skip", rp["skip_unseen"])
+                rp_changed |= c
+                for key, label, lo, hi in (("afm_time", "Auto-forward (1 fast .. 40 slow)", 1, 40), ("music", "Music volume %", 0, 100),
+                                           ("sound", "Sound volume %", 0, 100), ("voice", "Voice volume %", 0, 100)):
+                    keep = rp[key] is None
+                    c, keep_new = imgui.checkbox(f"keep the game's###lt_rp_keep_{key}", keep)
+                    rp_changed |= c
+                    if c:
+                        rp[key] = None if keep_new else (15 if key == "afm_time" else 70)
+                    if rp[key] is not None:
+                        imgui.same_line()
+                        imgui.set_next_item_width(right_width * 0.5)
+                        c, rp[key] = imgui.slider_int(f"{label}###lt_rp_{key}", int(rp[key]), lo, hi)
+                        rp_changed |= c
+                    else:
+                        imgui.same_line()
+                        imgui.text_disabled(label)
+                modes = ["keep the game's", "windowed", "fullscreen"]
+                index = 0 if rp["fullscreen"] is None else 2 if rp["fullscreen"] else 1
+                imgui.set_next_item_width(right_width)
+                c, index = imgui.combo("###lt_rp_full", index, modes)
+                if c:
+                    rp["fullscreen"] = None if index == 0 else index == 2
+                    rp_changed = True
+            if rp_changed:
+                installdate.save_prefs()
+            if imgui.button("Apply to all Ren'Py games now###lt_rp_apply", width=right_width):
+                async def _apply_prefs():
+                    count = await asyncio.get_running_loop().run_in_executor(None, installdate.apply_renpy_prefs_all)
+                    utils.push_popup(msgbox.msgbox, "Ren'Py preferences", f"{count} Ren'Py game(s) updated.", MsgBox.info)
+                async_thread.run(_apply_prefs())
+            # Drive balance
+            draw_settings_label(
+                "Drives:",
+                "Moves the games you have not played for the longest time from the fullest drives to the one with\n"
+                "the most room (plan shown first, nothing moves without your OK)."
+            )
+            if imgui.button("Balance###lt_balance", width=right_width):
+                pctools.open_balance_popup()
 
             imgui.end_table()
             imgui.spacing()

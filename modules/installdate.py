@@ -71,6 +71,7 @@ EXCLUDED_FILES = {
     # F95Checker's own files in games (cheats console, toy sync, DLSS 5 kit) and ReShade / DLSS 5 mods:
     # adding them must not make the game look freshly updated
     "zz_f95checker_console.rpy", "zz_f95checker_console.rpyc", "zz_f95toy.rpy", "zz_f95toy.rpyc",
+    "zz_f95checker_prefs.rpy", "zz_f95checker_prefs.rpyc",
     "dlss5_settings.rpy", "dlss5_settings.rpyc", "_f95dlss5.json",
     "dxgi.dll", "dxgi.dll.off", "reshade.ini", "reshadepreset.ini", "nvngx_dlss.dll", "nvngx_dlssnr.dll",
     "nvngx_dlss.dll.ver", "nvngx_dlssnr.dll.ver", "setup dlss5.bat", "uninstall dlss5.bat", "reshade_setup.exe",
@@ -798,6 +799,7 @@ async def scan_library(*games: Game, manual=True, reserved=False):
     for game in games:
         try:
             await _scan_game(game, lib, base, manual, report)
+            await loop.run_in_executor(None, ensure_renpy_prefs, game)
             if await loop.run_in_executor(None, ensure_default_cheats, game):
                 info = local_info().get(game.id)
                 exe = _main_exe(game)
@@ -1579,6 +1581,133 @@ def _console_path(game: Game) -> pathlib.Path | None:
 def cheats_enabled(game: Game) -> bool:
     path = _console_path(game)
     return path is not None and path.is_file()
+
+
+PREFS_FILE = "zz_f95checker_prefs.rpy"
+RENPY_PREFS_DEFAULT = {
+    "on": True,
+    "skip_unseen": True,        # Skip also passes text you have not read yet
+    "afm_time": None,           # Auto-forward speed 1 (fast) .. 40 (slow); None = leave the game's
+    "music": None,              # volumes 0..100; None = leave the game's
+    "sound": None,
+    "voice": None,
+    "fullscreen": None,         # True / False; None = leave the game's
+}
+PREFS_TEMPLATE = """# Added by F95Checker (Library tools > Ren'Py preferences). Delete this file to remove it.
+# Sets your usual preferences once per F95Checker settings version, and only those still at the game's
+# default value: what you changed in the game stays. Saves are not affected.
+# Applied on the first frame (after Ren'Py has set its own defaults), then never again.
+init 999 python:
+    def _f95_prefs_default(name, configured):
+        # what the game starts with: its config.default_* if set, else Ren'Py's own default
+        if configured is not None:
+            return configured
+        try:
+            for pref in renpy.preferences.all_preferences:
+                if pref.name == name:
+                    return pref.default
+        except Exception:
+            pass
+        return None
+
+    def _f95_prefs_apply():
+        if _f95_prefs_apply.done:
+            return
+        _f95_prefs_apply.done = True
+        try:
+            if getattr(persistent, "f95checker_prefs", None) == {token!r}:
+                return
+            p = renpy.game.preferences
+            want = {values!r}
+            if "skip_unseen" in want and p.skip_unseen == _f95_prefs_default("skip_unseen", None):
+                p.skip_unseen = want["skip_unseen"]
+            if "afm_time" in want and p.afm_time == _f95_prefs_default("afm_time", config.default_afm_time):
+                p.afm_time = want["afm_time"]
+            for mixer, default in (("music", config.default_music_volume), ("sfx", config.default_sfx_volume),
+                                   ("voice", config.default_voice_volume)):
+                if mixer not in want:
+                    continue
+                try:
+                    now = p.get_volume(mixer)
+                except Exception:
+                    now = p.volumes.get(mixer, default)
+                if abs(now - default) < 0.001:
+                    try:
+                        p.set_volume(mixer, want[mixer])
+                    except Exception:
+                        p.volumes[mixer] = want[mixer]
+            if "fullscreen" in want and p.fullscreen == _f95_prefs_default("fullscreen", config.default_fullscreen):
+                p.fullscreen = want["fullscreen"]
+            persistent.f95checker_prefs = {token!r}
+        except Exception:
+            pass
+    _f95_prefs_apply.done = False
+    config.periodic_callbacks.append(_f95_prefs_apply)
+"""
+
+
+def renpy_prefs() -> dict:
+    p = prefs()
+    current = p.get("renpy_prefs")
+    if not isinstance(current, dict):
+        current = p["renpy_prefs"] = {}
+    for key, value in RENPY_PREFS_DEFAULT.items():
+        current.setdefault(key, value)
+    return current
+
+
+def renpy_prefs_script() -> str | None:
+    """Content of zz_f95checker_prefs.rpy for the current settings, None if the option is off or empty.
+    Python 2 and 3 compatible (Ren'Py 6 to 8)."""
+    rp = renpy_prefs()
+    if not rp["on"]:
+        return None
+    values = {}
+    if rp["skip_unseen"]:
+        values["skip_unseen"] = True
+    if rp["afm_time"] is not None:
+        values["afm_time"] = int(rp["afm_time"])
+    for key, mixer in (("music", "music"), ("sound", "sfx"), ("voice", "voice")):
+        if rp[key] is not None:
+            values[mixer] = round(max(0, min(100, int(rp[key]))) / 100.0, 2)
+    if rp["fullscreen"] is not None:
+        values["fullscreen"] = bool(rp["fullscreen"])
+    if not values:
+        return None
+    token = "v1:" + json.dumps(values, sort_keys=True)
+    return PREFS_TEMPLATE.format(token=token, values=dict(sorted(values.items())))
+
+
+def ensure_renpy_prefs(game: Game, content: str | None = "") -> bool:
+    """Writes / updates / removes zz_f95checker_prefs.rpy in a Ren'Py game. True if something changed.
+    content="" = computed from the settings (renpy_prefs_script)."""
+    path = _console_path(game)
+    if path is None:
+        return False
+    path = path.with_name(PREFS_FILE)
+    if content == "":
+        content = renpy_prefs_script()
+    try:
+        if content is None:
+            if path.is_file():
+                path.unlink()
+                path.with_suffix(".rpyc").unlink(missing_ok=True)
+                return True
+            return False
+        if path.is_file() and path.read_text(encoding="utf-8") == content:
+            return False
+        path.write_text(content, encoding="utf-8")
+        path.with_suffix(".rpyc").unlink(missing_ok=True)
+        return True
+    except OSError as exc:
+        _log(f"'{game.name}': Ren'Py preferences not written: {exc}")
+        return False
+
+
+def apply_renpy_prefs_all() -> int:
+    """Library tools > Ren'Py preferences > Apply: every Ren'Py game now (blocking: run it in a thread)."""
+    content = renpy_prefs_script()
+    return sum(1 for game in list(globals.games.values()) if ensure_renpy_prefs(game, content))
 
 
 def ensure_default_cheats(game: Game) -> bool:
