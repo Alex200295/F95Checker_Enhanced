@@ -68,10 +68,13 @@ from modules import (
     discover,
     globals,
     icons,
+    importupdate,
     installdate,
     msgbox,
+    pctools,
     rpc_thread,
     rpdl,
+    showcase,
     toy,
     utils,
     webview,
@@ -1012,6 +1015,7 @@ class MainGUI():
                         or popup_stack_changed
                         or self.new_styles
                         or api.updating
+                        or showcase.needs_redraw()
                     )
                     if draw:
                         draw_next = max(draw_next, imgui.io.delta_time + 1.0)  # Draw for at least next half second
@@ -1852,7 +1856,13 @@ class MainGUI():
         self.draw_game_clear_exes_button(game, f"{icons.folder_remove_outline} Clear Exes", selectable=True)
         self.draw_game_open_folder_button(game, f"{icons.folder_open_outline} Open Folder", selectable=True)
         self.draw_game_detect_install_date_button(game, f"{icons.calendar_search} Scan Local Copy", selectable=True)
-        if game and installdate.local_engine(game) == "Ren'Py":
+        if game and imgui.selectable(f"{icons.archive_arrow_down_outline} Import Update...", False)[0]:
+            importupdate.import_update(game)
+        self.draw_hover_text(
+            "Install a downloaded update archive (.zip / .7z / .rar) into this game's folder, replacing its files.",
+            text=None,
+        )
+        if game and installdate.engine_now(game) == "Ren'Py":
             cheats_on = installdate.cheats_enabled(game)
             if imgui.selectable(f"{icons.cheese} {'Disable' if cheats_on else 'Enable'} Cheats", False)[0]:
                 installdate.toggle_cheats(game)
@@ -1862,6 +1872,7 @@ class MainGUI():
                 text=None,
             )
         toy.draw_context_menu(game)
+        pctools.draw_context_menu(game)
         if game and imgui.selectable(f"{icons.puzzle_outline} Mods & Extras", False)[0]:
             discover.open_mods_popup([game])
         if game and game.installed != game.version and not game.custom:
@@ -2597,6 +2608,17 @@ class MainGUI():
             self.draw_game_archive_button(game, label_off=f"{icons.archive_outline} Archive", label_on=f"{icons.archive_off_outline} Unarchive")
             imgui.same_line()
             self.draw_game_remove_button(game, f"{icons.trash_can_outline} Remove")
+            if imgui.button(f"{icons.archive_arrow_down_outline} Import Update"):
+                importupdate.import_update(game)
+            if installdate.engine_now(game) == "Ren'Py":
+                imgui.same_line()
+                cheats_on = installdate.cheats_enabled(game)
+                if imgui.button(f"{icons.cheese} {'Disable' if cheats_on else 'Enable'} Cheats"):
+                    installdate.toggle_cheats(game)
+            if game.installed != game.version and not game.custom and game.downloads:
+                imgui.same_line()
+                if imgui.button(f"{icons.download} Download Update"):
+                    installdate.start_download(game)
 
             # Minimum width to avoid content shifting around and clipping (like Archive/Unarchive)
             imgui.dummy(self.scaled(790), 0)
@@ -3969,12 +3991,17 @@ class MainGUI():
         rounding = self.scaled(globals.settings.style_corner_radius)
         imgui.begin_group()
         # Image
+        img_x, img_y = imgui.get_cursor_screen_pos()
         if game.image.error:
             showed_img = imgui.is_rect_visible(cell_width, img_height)
             self.draw_game_image_error(game, game.image, cell_width, img_height)
         else:
             crop = game.image.crop_to_ratio(globals.settings.cell_image_ratio, fit=globals.settings.fit_images)
             showed_img = game.image.render(cell_width, img_height, *crop, rounding=rounding, flags=imgui.DRAW_ROUND_CORNERS_TOP)
+        if showed_img:
+            # Slideshow of the thread screenshots on hover, UPDATE / NEW badge (modules/showcase.py)
+            showcase.cell_hover(game, img_x, img_y, cell_width, img_height, rounding, imgui.is_item_hovered())
+            showcase.draw_badge(game, img_x, img_y, cell_width, self.scaled(1))
         # Alignments
         imgui.indent(side_indent)
         wrap_pos = pos.x + cell_width - side_indent
@@ -4175,6 +4202,7 @@ class MainGUI():
             column_count -= 1
         expand = cell_width > min_expand_width
         img_height = cell_width / globals.settings.cell_image_ratio
+        showcase.draw_shelf(self, self.show_games_ids[self.current_tab])
         imgui.push_style_var(imgui.STYLE_CELL_PADDING, (padding, padding))
         if imgui.begin_table(
             "###game_grid",
@@ -4672,6 +4700,62 @@ class MainGUI():
             imgui.end_table()
             imgui.spacing()
 
+        if draw_settings_section("Library tools"):
+            draw_settings_label("Statistics:", "Play time per week, top developers / tags, space per drive, engines, completion.")
+            if imgui.button("Open###lt_stats", width=right_width):
+                showcase.open_stats_popup()
+            draw_settings_label(
+                "Compression:",
+                "Windows' own compression of game folders (like CompactGUI): less space, games run as before, reversible.\n"
+                "Shows the estimated gain per game first. NTFS drives only."
+            )
+            if imgui.button("Open###lt_compress", width=right_width):
+                pctools.open_compression_popup()
+            p = installdate.prefs()
+            for key, label, tip in (
+                ("hover_preview", "Hover slideshow:", "Thread screenshots play in the card when the mouse stays on a cover (grid view)."),
+                ("shelf", "To play shelf:", "Row above the grid with the games updated since you last played them (and UPDATE / NEW badges)."),
+                ("watch_downloads", "Watch downloads:", "Proposes Import Update when an archive named like one of your games finishes downloading."),
+                ("cheats_default", "Cheats in Ren'Py games:", "Adds the developer console (Shift+O) to every Ren'Py game at each scan, new version folders too.\n"
+                                                             "Right click > Disable Cheats on a game keeps it off for that game."),
+            ):
+                draw_settings_label(label, tip)
+                changed, value = imgui.checkbox(f"###lt_{key}", bool(p.get(key, True)))
+                if changed:
+                    p[key] = value
+                    installdate.save_prefs()
+            draw_settings_label("Download folders:", "Folders watched for downloaded archives, separated by ; (default: your Downloads folder).")
+            imgui.set_next_item_width(right_width)
+            changed, value = imgui.input_text("###lt_dirs", "; ".join(p.get("watch_dirs") or []), 1000)
+            if changed:
+                p["watch_dirs"] = [d.strip().strip('"') for d in value.split(";") if d.strip()]
+                installdate.save_prefs()
+            draw_settings_label("Lossless Scaling:", "Path of LosslessScaling.exe (empty = found in your Steam libraries).")
+            imgui.set_next_item_width(right_width)
+            changed, value = imgui.input_text("###lt_ls_path", p.get("lossless_path", ""), 400)
+            if changed:
+                p["lossless_path"] = value.strip().strip('"')
+                installdate.save_prefs()
+            draw_settings_label("LS hotkey / delay:", "The Scale hotkey set in Lossless Scaling (default ctrl+alt+s), and the seconds\n"
+                                "the game window must stay in front before it is sent.")
+            imgui.set_next_item_width(right_width * 0.6)
+            changed, value = imgui.input_text("###lt_ls_key", p.get("lossless_hotkey", "ctrl+alt+s"), 40)
+            if changed:
+                p["lossless_hotkey"] = value.strip().lower()
+                installdate.save_prefs()
+            imgui.same_line()
+            imgui.set_next_item_width(right_width * 0.4 - imgui.style.item_spacing.x)
+            changed, value = imgui.input_float("###lt_ls_delay", float(p.get("lossless_delay", 4.0)), 0, 0, "%.0f s")
+            if changed:
+                p["lossless_delay"] = max(1.0, min(60.0, value))
+                installdate.save_prefs()
+            ls_exe = pctools.find_lossless()
+            draw_settings_label("LS found:", str(ls_exe or "Not found in your Steam libraries: set the path above."))
+            imgui.text("Yes" if ls_exe else "No")
+
+            imgui.end_table()
+            imgui.spacing()
+
         if draw_settings_section("Toy & Discover"):
             draw_settings_label(
                 "Connected toy:",
@@ -4688,6 +4772,15 @@ class MainGUI():
             )
             if imgui.button("Scan###toy_native", width=right_width):
                 async_thread.run(toy.scan_native_all())
+            draw_settings_label(
+                "Animation scripts:",
+                "Analyses the animations of all your Ren'Py games (toy sync on) and writes their toy scripts.\n"
+                "Only the missing ones, several at once. Long the first time: cancel and restart at will, nothing is lost.\n"
+                "Progress at the top of the Toy panel."
+            )
+            if imgui.button("Generate all###toy_gen_all_lib", width=right_width):
+                async_thread.run(toy.generate_all_scripts())
+                toy.open_panel()
             draw_settings_label(
                 "Recommendations:",
                 "Games you don't have yet, ranked by your tastes: tags of the games you rate high and play long,\n"
@@ -5509,7 +5602,15 @@ class MainGUI():
                 "Library folders = Set exe dir + the drive folder of every executable (eg: E:\\Games).\n"
                 "Sort by the Installed On column (right click a column header in list view to enable it)."
             )
-            if imgui.button("Scan", width=right_width):
+            scan_clicked = imgui.button("Scan", width=right_width)
+            if scan_clicked and utils.is_refreshing():
+                utils.push_popup(
+                    msgbox.msgbox, "Scan local library",
+                    "A refresh is running: the local scan runs by itself at its end (same progress bar).\n"
+                    "Use Scan when no refresh is running.",
+                    MsgBox.info,
+                )
+            elif scan_clicked:
                 buttons = {
                     f"{icons.check} Yes": lambda: utils.start_refresh_task(
                         installdate.scan_library(*globals.games.values(), manual=True),
@@ -5533,8 +5634,8 @@ class MainGUI():
             draw_settings_label(
                 "Updates to do:",
                 "Games where your local copy is older than the latest version, most recently played first.\n"
-                "Shows what changed since your version, warns when the disk is too full, and has a Download button "
-                "that sends the link to JDownloader."
+                "Shows what changed since your version, warns when the disk is too full, a Download button "
+                "(host page in your browser, or JDownloader) and an Import button that installs the downloaded archive."
             )
             if imgui.button("Open", width=right_width):
                 installdate.open_updates_popup()

@@ -27,6 +27,7 @@ Data: <F95Checker data>/toy.json, toy_patterns/*.json, toy_scripts/<game id>/*.f
 """
 import asyncio
 import bisect
+import concurrent.futures
 import contextlib
 import dataclasses
 import json
@@ -70,6 +71,7 @@ def _log(msg: str):
 
 DEFAULT_SETTINGS = {
     "server": "ws://127.0.0.1:12345",
+    "enable_by_default": True,      # games never set by hand get toy sync (Ren'Py: sync script added after each scan)
     "auto_connect": True,           # connect to Intiface when F95Checker starts
     "auto_intiface": True,          # start Intiface Central when a toy-enabled game is launched
     "intiface_path": "",
@@ -88,7 +90,7 @@ DEFAULT_SETTINGS = {
     "games": {},
 }
 DEFAULT_GAME = {
-    "enabled": False,               # opt-in
+    "enabled": None,                # True / False set by hand, None = follow "enable_by_default"
     "mode": "auto",                 # auto / native / B / C / A / off
     "intensity": 1.0,               # 0.2 .. 2.0
     "offset_ms": 0,                 # -1000 .. +1000, + = toy later
@@ -121,7 +123,20 @@ def settings() -> dict:
         _settings = {**DEFAULT_SETTINGS, **(data if isinstance(data, dict) else {})}
         if not isinstance(_settings.get("games"), dict):
             _settings["games"] = {}
+        if isinstance(data, dict) and data and "enable_by_default" not in data:
+            # toy.json of the opt-in version: "enabled": false was only the old default, never a choice -> follow the new default
+            for cfg in _settings["games"].values():
+                if isinstance(cfg, dict) and cfg.get("enabled") is False:
+                    cfg["enabled"] = None
+            _log("Toy sync now on by default (toy.json converted)")
     return _settings
+
+
+def is_enabled(game_id: int) -> bool:
+    """Toy sync on for this game: its own checkbox if you set it, else "enable_by_default"."""
+    cfg = settings()["games"].get(str(game_id))
+    value = cfg.get("enabled") if isinstance(cfg, dict) else None
+    return bool(settings()["enable_by_default"]) if value is None else bool(value)
 
 
 def save_settings():
@@ -879,10 +894,9 @@ def script_count(game_id: int) -> int:
 
 def toy_display(game: Game) -> str:
     """Toy column: what sync this game gets (never blocks the GUI)."""
-    cfg = settings()["games"].get(str(game.id))
     native = _native_cache.get(game.id)
     native_label = {"buttplug": "Native (Intiface)", "lovense": "Native (Lovense app)"}.get(native[1], "") if native else ""
-    if not (isinstance(cfg, dict) and cfg.get("enabled")):
+    if not is_enabled(game.id):
         return native_label
     mode = resolve_mode(game, gui=True)
     label = {"native": native_label or "Native", "B": "Ren'Py sync", "C": "Rumble", "A": "Audio", "off": "Off"}.get(mode, mode)
@@ -1065,7 +1079,7 @@ def find_script_file(game: Game, key: str) -> pathlib.Path | None:
 
 @dataclasses.dataclass(slots=True)
 class GenJob:
-    game_id: int
+    game_id: int                # 0 = every Ren'Py game (generate_all_scripts)
     total: int = 0
     done: int = 0
     failed: int = 0
@@ -1073,6 +1087,9 @@ class GenJob:
     running: bool = True
     cancel: bool = False
     message: str = ""
+    games_total: int = 0        # generate_all_scripts only
+    games_done: int = 0
+    made: int = 0               # scripts written, all games
 
 
 gen_job: GenJob | None = None
@@ -1117,6 +1134,101 @@ async def generate_scripts(game: Game, regenerate=False):
     finally:
         job.running = False
         job.current = ""
+
+
+def gen_workers() -> int:
+    """Animations analysed at once by "Generate for all games": half the CPU threads (the GUI stays smooth), 1..6."""
+    return max(1, min(6, (os.cpu_count() or 2) // 2))
+
+
+async def generate_all_scripts():
+    """Scripts of every Ren'Py game with toy sync on (Ren'Py animation sync mode): only the missing ones,
+    several animations at once. Cancel / restart at will: what is done stays done."""
+    global gen_job
+    if gen_job and gen_job.running:
+        return
+    job = gen_job = GenJob(0, message="Looking for Ren'Py games...")
+    loop = asyncio.get_running_loop()
+    ffmpeg = settings()["ffmpeg_path"]
+    pool = concurrent.futures.ThreadPoolExecutor(gen_workers(), thread_name_prefix="toygen")
+    try:
+        decoder = toygen.decoder_available(ffmpeg)
+        if not decoder:
+            job.message = "No video decoder: install PyAV (pip install av) or ffmpeg, or set the ffmpeg path."
+            return
+        games = sorted((g for g in globals.games.values() if is_enabled(g.id) and engine_of(g) == "Ren'Py"),
+                       key=lambda g: g.name.lower())
+        job.games_total = len(games)
+        _log(f"Scripts for all games: {len(games)} Ren'Py game(s), {gen_workers()} at once ({decoder})")
+        for game in games:
+            if job.cancel:
+                break
+            job.current, job.done, job.total = game.name, 0, 0
+            try:
+                game_dir = game_dir_of(game)
+                mode = await loop.run_in_executor(None, resolve_mode, game) if game_dir is not None else ""
+                if mode != "B":
+                    continue
+                videos = await loop.run_in_executor(None, toygen.list_videos, game_dir)
+                out = scripts_dir(game.id)
+                todo = [v for v in videos if not (out / toygen.script_name(v.key)).is_file()]
+                job.total = len(todo)
+                futures = [loop.run_in_executor(pool, toygen.generate, video, out, ffmpeg) for video in todo]
+                for future in asyncio.as_completed(futures):
+                    try:
+                        await future
+                        job.made += 1
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as exc:
+                        job.failed += 1
+                        _log(f"Script for {game.name} failed: {exc}")
+                    job.done += 1
+                    if job.cancel:
+                        for pending in futures:
+                            pending.cancel()
+                        break
+                engine.scripts.clear()
+                _count_cache.pop(game.id, None)
+            except Exception as exc:
+                _log(f"Scripts for {game.name}: {exc!r}")
+            finally:
+                job.games_done += 1
+        verb = "Cancelled" if job.cancel else "Done"
+        job.message = f"{verb}: {job.made} scripts made, {job.failed} failed, {job.games_done}/{job.games_total} games."
+        _log(job.message)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+        job.running = False
+        job.current = ""
+
+
+def ensure_hooks(games=None) -> int:
+    """After each local scan (blocking, run it in a thread): the sync script in every toy-enabled Ren'Py game
+    in mode B, so it also works when the game is started from Explorer or a new version folder. Returns how many were added."""
+    added = 0
+    for game in list(games or globals.games.values()):
+        try:
+            if not is_enabled(game.id) or engine_of(game) != "Ren'Py" or hook_installed(game):
+                continue
+            mode = game_cfg(game.id)["mode"] if str(game.id) in settings()["games"] else "auto"
+            if _hook_path(game) is None:
+                continue
+            if mode == "auto":
+                cached = _native_cache.get(game.id)
+                exe = installdate._main_exe(game)
+                if cached and exe is not None and cached[0] == str(exe.parent):
+                    kind = cached[1]
+                else:
+                    kind = detect_native(game)[0]
+                mode = "native" if kind else "B"
+            if mode == "B" and not install_hook(game):
+                added += 1
+        except Exception as exc:
+            _log(f"ensure_hooks {game.name}: {exc!r}")
+    if added:
+        _log(f"Sync script added to {added} Ren'Py game(s)")
+    return added
 
 
 async def _generate_one(game: Game, key: str):
@@ -1486,8 +1598,7 @@ def on_hook_event(data: dict):
     state.menu = bool(data.get("menu"))
     state.pid = int(data.get("pid") or 0)
     state.received = now
-    cfg = settings()["games"].get(str(game_id))
-    if isinstance(cfg, dict) and cfg.get("enabled") and not engine.estopped and game_id not in engine.suppress \
+    if is_enabled(game_id) and not engine.estopped and game_id not in engine.suppress \
             and (engine.game is None or engine.game.id != game_id) and resolve_mode(game, gui=True) == "B":
         # game started outside F95Checker (or F95Checker restarted while playing)
         async_thread.run(engine.start_game(game, "B"))
@@ -1516,8 +1627,7 @@ def set_enabled(game: Game, enabled: bool):
 
 async def before_launch(game: Game):
     """callbacks._launch_game_exe, BEFORE starting the game: the Ren'Py sync script must exist when Ren'Py loads."""
-    cfg = settings()["games"].get(str(game.id))
-    if not isinstance(cfg, dict) or not cfg.get("enabled"):
+    if not is_enabled(game.id):
         return
     try:
         mode = await asyncio.get_running_loop().run_in_executor(None, resolve_mode, game)
@@ -1530,8 +1640,7 @@ async def before_launch(game: Game):
 
 
 async def _on_game_launched(game: Game):
-    cfg = settings()["games"].get(str(game.id))
-    if not isinstance(cfg, dict) or not cfg.get("enabled"):
+    if not is_enabled(game.id):
         return
     engine.suppress.discard(game.id)
     mode = await asyncio.get_running_loop().run_in_executor(None, resolve_mode, game)
@@ -1660,7 +1769,7 @@ def draw_context_menu(game: Game):
         return
     if imgui.begin_menu(f"{icons.vibrate} Toy"):
         cfg = game_cfg(game.id)
-        changed, value = imgui.checkbox("Sync with my toy###toy_enabled", cfg["enabled"])
+        changed, value = imgui.checkbox("Sync with my toy###toy_enabled", is_enabled(game.id))
         if changed:
             set_enabled(game, value)
         mode = resolve_mode(game, gui=True)
@@ -1729,6 +1838,7 @@ def _draw_panel():
             imgui.same_line()
             if imgui.button("Stop"):
                 async_thread.run(engine.stop("Stopped by hand", manual=True))
+    _draw_all_scripts_line()
     imgui.separator()
     for i, name in enumerate(SECTIONS):
         if imgui.radio_button(name, st["section"] == i):
@@ -1747,7 +1857,8 @@ def _draw_panel():
         for key, label in (("auto_connect", "Connect when F95Checker starts"),
                            ("auto_intiface", "Start Intiface Central when a toy game launches"),
                            ("pause_unfocused", "Pause when the game window is not in front"),
-                           ("hotkeys", "Emergency stop hotkeys: Pause / Ctrl+Alt+End (restart F95Checker to apply)")):
+                           ("hotkeys", "Emergency stop hotkeys: Pause / Ctrl+Alt+End (restart F95Checker to apply)"),
+                           ("enable_by_default", "Toy sync on for every game you did not set by hand (Ren'Py: sync script added at each scan)")):
             changed, value = imgui.checkbox(f"{label}###toy_{key}", s[key])
             if changed:
                 s[key] = value
@@ -1846,7 +1957,7 @@ def _draw_game_section(game: Game, width: float):
     if native and native[0]:
         app = "Intiface" if native[0] == "buttplug" else "the Lovense Remote app (official Lovense SDK)"
         imgui.text_colored(f"Built-in toy support ({native[1]}): Auto = the game drives the toy through {app}.", 0.3, 0.85, 0.35)
-    changed, value = imgui.checkbox("Sync with my toy (opt-in)###toy_g_en", cfg["enabled"])
+    changed, value = imgui.checkbox("Sync with my toy###toy_g_en", is_enabled(game.id))
     if changed:
         set_enabled(game, value)
     imgui.set_next_item_width(width)
@@ -1889,7 +2000,7 @@ def _draw_game_section(game: Game, width: float):
                 with contextlib.suppress(OSError):
                     (scripts_dir(game.id) / toygen.script_name(key)).unlink()
                 engine.scripts.pop((game.id, key), None)
-    elif cfg["enabled"]:
+    elif is_enabled(game.id):
         if imgui.button("Start now (game already running)###toy_g_start"):
             engine.suppress.discard(game.id)
             async_thread.run(_on_game_launched(game))
@@ -1906,7 +2017,9 @@ def _draw_game_section(game: Game, width: float):
         else:
             if job and job.message:
                 imgui.text_disabled(job.message)
-            if imgui.button("Generate missing scripts###toy_gen"):
+            if gen_job and gen_job.running:
+                imgui.text_disabled("Scripts are being generated for all games (top of this window).")
+            elif imgui.button("Generate missing scripts###toy_gen"):
                 async_thread.run(generate_scripts(game))
             imgui.same_line()
             if imgui.button("Regenerate all###toy_regen"):
@@ -1915,6 +2028,27 @@ def _draw_game_section(game: Game, width: float):
         imgui.text_disabled(f"Sync script in the game: {'installed' if hook_installed(game) else 'added at next launch'}")
     if dirty:
         save_settings()
+
+
+def _draw_all_scripts_line():
+    """Progress of "Generate scripts for all Ren'Py games" (top of the panel, every section)."""
+    import imgui
+    job = gen_job
+    if job is None or job.game_id != 0:
+        if imgui.small_button(f"{icons.movie_open_cog_outline} Generate scripts for all Ren'Py games###toy_gen_all"):
+            async_thread.run(generate_all_scripts())
+        return
+    if job.running:
+        imgui.text(f"All games: game {min(job.games_done + 1, job.games_total)}/{job.games_total} "
+                   f"({job.current[:40]}) {job.done}/{job.total}  -  {job.made} scripts made, {job.failed} failed")
+        imgui.same_line()
+        if imgui.small_button("Cancel###toy_gen_all_cancel"):
+            job.cancel = True
+    else:
+        imgui.text_disabled(job.message)
+        imgui.same_line()
+        if imgui.small_button("Again###toy_gen_all_again"):
+            async_thread.run(generate_all_scripts())
 
 
 def _draw_patterns_section(width: float):

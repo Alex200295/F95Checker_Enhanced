@@ -798,6 +798,11 @@ async def scan_library(*games: Game, manual=True, reserved=False):
     for game in games:
         try:
             await _scan_game(game, lib, base, manual, report)
+            if await loop.run_in_executor(None, ensure_default_cheats, game):
+                info = local_info().get(game.id)
+                exe = _main_exe(game)
+                if info is not None and exe is not None:
+                    info["engine"], info["cheats"] = detect_engine(exe)
         except Exception:
             _log(f"'{game.name}': error {error.traceback()}")
             report.errors.append(f"{game.name}: {error.text()}")
@@ -805,6 +810,11 @@ async def scan_library(*games: Game, manual=True, reserved=False):
     await db.save()
     save_local_info()
     _log(f"End: {report}")
+    try:
+        from modules import toy  # toy imports this module
+        await loop.run_in_executor(None, toy.ensure_hooks, games)
+    except Exception:
+        _log(f"Toy sync scripts: {error.traceback()}")
     if globals.gui:
         globals.gui.recalculate_ids = True
     new_old_versions = [old for old in report.old_versions if str(old.path) not in _announced_old_versions]
@@ -1220,6 +1230,7 @@ def prefs() -> dict:
         except Exception:
             _prefs = {}
         _prefs.setdefault("jdownloader", False)
+        _prefs.setdefault("cheats_default", True)
     return _prefs
 
 
@@ -1570,6 +1581,23 @@ def cheats_enabled(game: Game) -> bool:
     return path is not None and path.is_file()
 
 
+def ensure_default_cheats(game: Game) -> bool:
+    """Library tools > Cheats in Ren'Py games: adds the console script to a Ren'Py game (new version folders too),
+    unless you disabled the cheats of this game by hand. True if it was added."""
+    if not prefs().get("cheats_default", True) or local_info().get(game.id, {}).get("cheats_off"):
+        return False
+    path = _console_path(game)
+    if path is None or path.is_file():
+        return False
+    try:
+        path.write_text(CONSOLE_SCRIPT, encoding="utf-8")
+        _log(f"'{game.name}': cheats console added")
+        return True
+    except OSError as exc:
+        _log(f"'{game.name}': cheats console not added: {exc}")
+        return False
+
+
 def toggle_cheats(game: Game):
     """Ren'Py: adds / removes a 4-line script enabling the developer console. Nothing else is modified."""
     path = _console_path(game)
@@ -1584,9 +1612,13 @@ def toggle_cheats(game: Game):
         if path.is_file():
             path.unlink()
             path.with_suffix(".rpyc").unlink(missing_ok=True)
+            local_info().setdefault(game.id, {})["cheats_off"] = True  # not added back by the next scan
+            save_local_info()
             message = f"Cheats disabled for {game.name}: console script removed."
         else:
             path.write_text(CONSOLE_SCRIPT, encoding="utf-8")
+            if local_info().get(game.id, {}).pop("cheats_off", None):
+                save_local_info()
             message = (
                 f"Cheats enabled for {game.name}. Restart the game, then:\n"
                 " - Shift+O opens the console: type for example  money = 99999  then Enter\n"
