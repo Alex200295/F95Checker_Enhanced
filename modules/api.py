@@ -187,11 +187,17 @@ def make_session():
             loop=async_thread.loop,
         )
 
-    # If we ever need to modify DNS results
-    # async def resolve(self: aiohttp.DefaultResolver, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET):
-    #     hosts = await type(self).resolve(self, host, port, family)
-    #     return hosts
-    # connector._resolver.resolve = functools.partial(resolve, connector._resolver)
+    # Temporarily ignore the single attachments host with signed URLs enabled
+    async def resolve(self: aiohttp.DefaultResolver, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET):
+        hosts = await type(self).resolve(self, host, port, family)
+        if host in f95_attachments_domains:
+            for host_i in reversed(range(len(hosts))):
+                if hosts[host_i].get("host") in (
+                    "91.202.4.58",
+                ):
+                    del hosts[host_i]
+        return hosts
+    connector._resolver.resolve = functools.partial(resolve, connector._resolver)
 
     session = aiohttp.ClientSession(
         loop=async_thread.loop,
@@ -543,7 +549,8 @@ def raise_f95zone_error(res: bytes | dict, return_login=False):
 def raise_api_error(res: bytes | dict):
     if isinstance(res, bytes):
         if any(msg in res for msg in (
-            b'<div id="cf-error-details" class="p-0">',
+            b"<title>api.f95checker.dev | 502: Bad gateway</title>",
+            b"<title>api.f95checker.dev | 521: Web server is down</title>",
         )) or not res:
             raise msgbox.Exc(
                 "Server downtime",
@@ -989,7 +996,7 @@ async def fast_check(games: list[Game], full: bool, updates: dict[int, OldGame],
         async with fast_checks_sem:
             res = None
             try:
-                res = await fetch("GET", api_fast_check_url.format(ids=",".join(str(game.id) for game in games)), timeout=600, cookies=False)
+                res = await fetch("GET", api_fast_check_url.format(ids=",".join(str(game.id) for game in games)), timeout=120, cookies=False)
                 raise_api_error(res)
                 last_changes = json.loads(res)
                 raise_api_error(last_changes)
@@ -1077,15 +1084,15 @@ async def full_check(game: Game, last_changed: int, updates: dict[int, OldGame],
                     thread["tags"][i] = Tag.unknown
             thread["tags"] = tuple(thread["tags"])
             thread["unknown_tags"] = json.loads(thread["unknown_tags"])
-            thread["previews_urls"] = json.loads(thread.get("previews_urls", "[]"))
             thread["downloads"] = json.loads(thread["downloads"])
             for _, links in thread["downloads"]:
                 for link_i, link_pair in enumerate(links):
                     links[link_i] = tuple(link_pair)
+            thread["previews_urls"] = json.loads(thread.get("previews_urls", "[]"))
             thread["downloads"] = tuple(thread["downloads"])
             thread["reviews_total"] = int(thread.get("reviews_total", "0"))
             thread["reviews"] = json.loads(thread.get("reviews", "[]"))
-            thread["reviews"] = [Review(**{k: v for k, v in review.items() if k in Review.__dataclass_fields__}) for review in thread["reviews"]]
+            thread["reviews"] = [Review(**review) for review in thread["reviews"]]
 
             old_name = game.name
             old_version = game.version
@@ -1510,42 +1517,26 @@ async def check_updates():
         total = 1.0
         status = f"(2/3) Extracting {asset_name}..."
         if asset_artifact:
-            with zipfile.ZipFile(asset_data) as arc:
-                asset_data = io.BytesIO(arc.read(asset_name.replace("-Artifact", "")))
+            with zipfile.ZipFile(asset_data) as z:
+                asset_data = io.BytesIO(z.read(asset_name.replace("-Artifact", "")))
         asset_path = pathlib.Path(tempfile.TemporaryDirectory(prefix=asset_name[:asset_name.rfind(".")] + "-").name)
-        with zipfile.ZipFile(asset_data) as arc:
-            arc._ignore_invalid_names = True  # Fix path and link traversal in arc.extract()
-            # Extract manually to create symlinks and apply permissions
-            path = asset_path
-            total = float(len(arc.filelist))
-            for file in arc.filelist:
+        with zipfile.ZipFile(asset_data) as z:
+            total = float(len(z.filelist))
+            for file in z.filelist:
                 if cancel:
                     shutil.rmtree(asset_path, ignore_errors=True)
                     return
                 mode = file.external_attr >> 16
                 if (mode & stat.S_IFLNK) == stat.S_IFLNK:
-                    extracted = path / file.filename
-                    if path.resolve() not in extracted.resolve().parents:
-                        # Path traversal, ignore
-                        progress += 1
-                        continue
-                    symlink = arc.read(file).decode()
-                    if path.resolve() not in (extracted.resolve().parent / symlink).resolve().parents:
-                        # Link traversal, ignore
-                        progress += 1
-                        continue
-                    if extracted.exists():
-                        extracted.unlink()
-                    extracted.symlink_to(symlink)
-                    try:
-                        extracted.lchmod(mode)
-                    except NotImplementedError:
-                        pass
+                    extracted = asset_path / file.filename
+                    symlink = z.read(file).decode()
+                    os.symlink(symlink, extracted)
+                    if hasattr(os, "lchmod"):
+                        os.lchmod(extracted, mode)
                 else:
-                    extracted = arc.extract(file, path)
-                    if extracted and mode != 0:
-                        extracted = pathlib.Path(extracted)
-                        extracted.chmod(mode)
+                    extracted = z.extract(file, asset_path)
+                    if mode != 0:
+                        os.chmod(extracted, mode)
                 progress += 1
         progress = 5.0
         total = 5.0
@@ -1677,6 +1668,8 @@ async def refresh(*games: Game, full=False, notifs=True, force_archived=False, f
     notifs = notifs and globals.settings.check_notifs
     globals.refresh_progress += 1
     globals.refresh_total += sum(len(chunk) for chunk in fast_queue) + bool(notifs)
+    if not games:
+        globals.refresh_total += len(globals.games)  # Local scan at the end (installdate), counted now: no 100% -> 51% jump
     updates: dict[int, OldGame] = {}
     api_errors: dict[int, str] = {}
     missing_threads: list[int] = []
@@ -1754,6 +1747,12 @@ async def refresh(*games: Game, full=False, notifs=True, force_archived=False, f
     if not games:
         globals.settings.last_successful_refresh.update(time.time())
         await db.update_settings("last_successful_refresh")
+        # Local library scan: executables, local updates (Installed), install dates. Popup only if something changed.
+        from modules import installdate
+        try:
+            await installdate.scan_library(manual=False, reserved=True)
+        except Exception:
+            print(f"[LocalScan] Automatic scan failed: {error.traceback()}")
 
 
 async def download_file(download: FileDownload):

@@ -215,18 +215,12 @@ async def _launch_exe(executable: str, wrapper: str = ""):
     if utils.is_uri(executable):
         exe = executable
         cwd = None
-        is_windows_exe = False
-        is_unix_exe = False
     else:
         exe_path = pathlib.Path(executable)
         if globals.settings.default_exe_dir.get(globals.os) and not exe_path.is_absolute():
             exe_path = pathlib.Path(globals.settings.default_exe_dir.get(globals.os)) / exe_path
         exe = str(exe_path)
         cwd = exe_path.parent
-        with exe_path.open("rb") as f:
-            magic = f.read(8)
-            is_windows_exe = magic.startswith((b"MZ", b"ZM", b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"))  # .exe and .msi
-            is_unix_exe = magic.startswith((b"#!", b"\x7FELF"))  # Shebang and ELF
 
     # Always give precedence to wrappers (if any), since they might open the file/uri/folder in some user-defined way, do no custom handling in this case
     if wrapper:
@@ -234,26 +228,21 @@ async def _launch_exe(executable: str, wrapper: str = ""):
             # Ensure wine.match_runner() will work
             wine.refresh()
         is_wine_wrapper = wine.is_supported() and wine.match_runner(wrapper)
-        if is_wine_wrapper and not is_windows_exe:
-            # Wine can only open Windows executables, fall back to default behavior
-            wrapper = ""
-    if wrapper:
         args = shlex.split(wrapper)
         if any("%command%" in arg for arg in args):
             args = [arg.replace("%command%", exe) for arg in args]
         else:
             args.append(exe)
-        stdout = None
-        stderr = None
+        stderr = subprocess.DEVNULL
         if is_wine_wrapper:
             wine.ensure_prefix(wrapper)
-            launch_log_file = tempfile.NamedTemporaryFile(prefix="f95checker-launch-", suffix=".log", delete=False)
-            stdout = launch_log_file
-            stderr = launch_log_file
+            error_log_file = tempfile.NamedTemporaryFile(prefix="f95checker-launch-", suffix=".log", delete=False)
+            stderr = error_log_file
         process = await asyncio.create_subprocess_exec(
             *args,
             cwd=cwd,
-            stdout=stdout,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
             stderr=stderr
         )
         if is_wine_wrapper:
@@ -262,9 +251,9 @@ async def _launch_exe(executable: str, wrapper: str = ""):
                     code = await asyncio.wait_for(asyncio.shield(process.wait()), timeout=launch_watch_seconds)
                 except (asyncio.TimeoutError, TimeoutError):
                     code = None
-                launch_log_file.close()
-                if code is not None:
-                    launch_log = pathlib.Path(launch_log_file.name).read_text(errors="ignore").strip()[-10000:]
+                error_log_file.close()
+                if code:
+                    error_log = pathlib.Path(error_log_file.name).read_text(errors="ignore").strip()[-10000:]
                     utils.push_popup(
                         msgbox.msgbox, "Game launch error",
                         f"The launch wrapper exited with code {code}.\n",
@@ -273,12 +262,12 @@ async def _launch_exe(executable: str, wrapper: str = ""):
                             "Command:\n"
                             f"{shlex.join(args)}\n"
                             "\n"
-                            "Log:\n"
-                            f"{launch_log}"
+                            "Error log:\n"
+                            f"{error_log}"
                         ),
                     )
                 try:
-                    os.unlink(launch_log_file.name)
+                    os.unlink(error_log_file.name)
                 except OSError:
                     pass
             watcher = asyncio.create_task(watch_wrapper())
@@ -308,11 +297,21 @@ async def _launch_exe(executable: str, wrapper: str = ""):
         open_webpage(exe_path.as_uri())
         return
 
+    windows_exe_magics = (b"MZ", b"ZM", b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1")  # .exe and .msi
+    unix_exe_magics = (b"#!", b"\x7FELF")  # Shebang and ELF
     if globals.os is Os.Windows:
-        if is_windows_exe:
+        with exe_path.open("rb") as f:
+            exe_magic = f.read(8).startswith(windows_exe_magics)
+        if exe_magic:
             # Run as executable and get PID
             try:
-                return await asyncio.create_subprocess_exec(exe, cwd=cwd)
+                return await asyncio.create_subprocess_exec(
+                    exe,
+                    cwd=cwd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
             except OSError:
                 pass
         else:
@@ -321,42 +320,28 @@ async def _launch_exe(executable: str, wrapper: str = ""):
     else:
         mode = exe_path.stat().st_mode
         exe_flag = not (mode & stat.S_IEXEC < stat.S_IEXEC)
-        if (is_unix_exe or is_windows_exe) and not exe_flag:
+        with exe_path.open("rb") as f:
+            exe_magic = f.read(8).startswith((*unix_exe_magics, *windows_exe_magics))
+        if exe_magic and not exe_flag:
             # Should be executable but isn't, fix it
             exe_path.chmod(mode | stat.S_IEXEC)
             exe_flag = True
-        env = {}
-
-        # RenPy babysitting
         if (exe_path.parent / "renpy").is_dir():
-            # Make all needed RenPy libs executable
+            # Make all needed renpy libs executable
             for file in (exe_path.parent / "lib").glob("py?-*/**/*"):
                 if file.is_file():
                     mode = file.stat().st_mode
                     if mode & stat.S_IEXEC < stat.S_IEXEC:
                         file.chmod(mode | stat.S_IEXEC)
-            # Decide whether to really launch it in native Wayland
-            if globals.gui.glfw_platform == glfw.PLATFORM_WAYLAND:
-                force_x11 = False
-                if (vc_version_py := exe_path.parent / "renpy/vc_version.py").is_file():
-                    vc_version_raw = vc_version_py.read_bytes()
-                    # RenPy 7.6.0/8.1.0 and later do not have "vc_version = ", they instead store "version = "
-                    # Versions prior to this have spotty Wayland support, especially between 7.5.0/8.0.0 and 7.6.0/8.1.0 which entirely disabled it for no reason
-                    # Rather than trying to parse 4 different ways RenPy stored versions over the years to get a version number, this check is sufficient
-                    if b"vc_version = " in vc_version_raw:
-                        force_x11 = True
-                # As of writing, no RenPy release supports libdecor, so launching under native Wayland in a
-                # compositor without decoration manager protocol will give no decorations
-                if "zxdg_decoration_manager_v1" not in globals.gui.wayland_protocols:
-                    force_x11 = True
-                if force_x11:
-                    env["XDG_SESSION_TYPE"] = "x11"
-                    env["SDL_VIDEODRIVER"] = "x11"
-                    env["QT_QPA_PLATFORM"] = "xcb"
-
-        if (is_unix_exe or is_windows_exe) and exe_flag:
+        if exe_magic and exe_flag:
             # Run as executable and get PID
-            return await asyncio.create_subprocess_exec(exe, cwd=cwd, env=os.environ | env)
+            return await asyncio.create_subprocess_exec(
+                exe,
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
         else:
             # Open with default app
             await default_open(exe, cwd=cwd)
@@ -458,7 +443,12 @@ def _track_launch(game: Game, process):
 
 async def _launch_game_exe(game: Game, executable: str):
     try:
+        from modules import pctools, toy
+        await toy.before_launch(game)  # Ren'Py toy sync script must exist before the game loads
+        await pctools.before_launch(game)  # ReShade on / off for this game
         _track_launch(game, await _launch_exe(executable, wrapper=_resolve_launch_wrapper(game)))
+        toy.on_game_launched(game)
+        pctools.on_game_launched(game)  # Lossless Scaling
         game.last_launched = time.time()
         exe = pathlib.Path(executable)
         if utils.is_uri(executable):

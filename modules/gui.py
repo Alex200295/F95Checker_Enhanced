@@ -65,12 +65,19 @@ from modules import (
     callbacks,
     colors,
     db,
+    discover,
     globals,
     icons,
+    importupdate,
+    installdate,
     msgbox,
+    pctools,
     rpc_thread,
     rpdl,
+    showcase,
+    toy,
     utils,
+    visuals,
     webview,
     wine,
 )
@@ -259,6 +266,29 @@ class Columns:
             resizable=False,
             short_header=True,
         )
+        self.installed_on = self.Column(
+            self, f"{icons.calendar_check} Installed On",
+            sortable=True,
+            resizable=False,
+        )
+        self.size = self.Column(
+            self, f"{icons.harddisk} Size On Disk",
+            sortable=True,
+            resizable=False,
+        )
+        self.engine = self.Column(
+            self, f"{icons.cog_outline} Engine (detected)",
+            sortable=True,
+            resizable=False,
+        )
+        self.cheats = self.Column(
+            self, f"{icons.cheese} Cheats",
+            sortable=True,
+        )
+        self.toy = self.Column(
+            self, f"{icons.vibrate} Toy",
+            sortable=True,
+        )
 
 cols = Columns()
 
@@ -338,8 +368,6 @@ class MainGUI():
         self.game_hitbox_click = False
         self.hovered_game: Game = None
         self.dragging_previews = False
-        self.grabbing_previews_scrollbar = False
-        self.resizing_previews_height = False
         self.filters: list[Filter] = []
         self.poll_chars: list[int] = []
         self.refresh_ratio_smooth = 0.0
@@ -427,21 +455,6 @@ class MainGUI():
         glfw.set_window_pos_callback(self.window, self.pos_callback)
         glfw.set_drop_callback(self.window, self.drop_callback)
         glfw.swap_interval(globals.settings.vsync_ratio)
-
-        # Query supported Wayland protocls
-        self.wayland_protocols = {}
-        self.glfw_platform = glfw.get_platform()
-        if self.glfw_platform == glfw.PLATFORM_WAYLAND:
-            try:
-                import pywayland.client
-                def on_global(registry, name, interface, version):
-                    self.wayland_protocols[interface] = version
-                with pywayland.client.Display() as display:
-                    registry = display.get_registry()
-                    registry.dispatcher["global"] = on_global
-                    display.roundtrip()
-            except Exception as exc:
-                print(f"Failed enumerating Wayland protocols: {exc}")
 
         self.logo_texture = imagehelper.ImageHelper(globals.self_path / "resources/icons/logo.png")
         self.refresh_fonts()
@@ -1003,6 +1016,8 @@ class MainGUI():
                         or popup_stack_changed
                         or self.new_styles
                         or api.updating
+                        or showcase.needs_redraw()
+                        or visuals.needs_redraw()
                     )
                     if draw:
                         draw_next = max(draw_next, imgui.io.delta_time + 1.0)  # Draw for at least next half second
@@ -1092,23 +1107,15 @@ class MainGUI():
 
                         # Popups
                         open_popup_count = 0
-                        ran_popups = []
                         for popup in globals.popup_stack:
                             opened, closed = popup()
-                            ran_popups.append(f"{popup.uuid}: opened={opened} {popup.func}()")
                             if closed:
                                 globals.popup_stack.remove(popup)
                                 globals.popup_stack_changed = True
                             open_popup_count += opened
                         # Popups are closed all at the end to allow stacking
                         for _ in range(open_popup_count):
-                            try:
-                                imgui.end_popup()
-                            except imgui.core.ImGuiError:
-                                msg = "Popup stack:\n"
-                                for ran_popup in ran_popups:
-                                    msg += f"{ran_popup}\n"
-                                raise Exception(msg)
+                            imgui.end_popup()
 
                         # Close main window (technically popups are inside the window, and inside one another - this gives proper stacking order)
                         imgui.end()
@@ -1703,6 +1710,21 @@ class MainGUI():
                     if game.selected:
                         callbacks.open_game_folder(game)
 
+    def draw_game_detect_install_date_button(self, game: Game, label="", selectable=False):
+        if selectable:
+            clicked = imgui.selectable(label, False)[0]
+        else:
+            clicked = imgui.button(label)
+        self.draw_hover_text(
+            "Finds the game folder and executable (also after moving / renaming folders),\n"
+            "ticks Installed if your local copy is the latest version (un-ticks it if older),\n"
+            "and sets the Installed On date from the files.",
+            text=None,
+        )
+        if clicked:
+            games = [game] if game else [g for g in globals.games.values() if g.selected]
+            utils.start_refresh_task(installdate.detect_install_dates(*games), reset_bg_timers=False)
+
     def draw_game_id_button(self, game: Game, label="", selectable=False):
         if game.custom:
             imgui.push_disabled()
@@ -1835,6 +1857,30 @@ class MainGUI():
         self.draw_game_add_exe_button(game, f"{icons.folder_edit_outline} Add Exe", selectable=True)
         self.draw_game_clear_exes_button(game, f"{icons.folder_remove_outline} Clear Exes", selectable=True)
         self.draw_game_open_folder_button(game, f"{icons.folder_open_outline} Open Folder", selectable=True)
+        self.draw_game_detect_install_date_button(game, f"{icons.calendar_search} Scan Local Copy", selectable=True)
+        if game and imgui.selectable(f"{icons.archive_arrow_down_outline} Import Update...", False)[0]:
+            importupdate.import_update(game)
+        self.draw_hover_text(
+            "Install a downloaded update archive (.zip / .7z / .rar) into this game's folder, replacing its files.",
+            text=None,
+        )
+        if game and installdate.engine_now(game) == "Ren'Py":
+            cheats_on = installdate.cheats_enabled(game)
+            if imgui.selectable(f"{icons.cheese} {'Disable' if cheats_on else 'Enable'} Cheats", False)[0]:
+                installdate.toggle_cheats(game)
+            self.draw_hover_text(
+                "Ren'Py developer console (Shift+O in game) to change money, points and other variables.\n"
+                "Adds one small script file to the game folder, removed when you disable it.",
+                text=None,
+            )
+        toy.draw_context_menu(game)
+        pctools.draw_context_menu(game)
+        if game and imgui.selectable(f"{icons.puzzle_outline} Mods & Extras", False)[0]:
+            discover.open_mods_popup([game])
+        if game and game.installed != game.version and not game.custom:
+            if imgui.selectable(f"{icons.download} Download Update", False)[0]:
+                installdate.start_download(game)
+            self.draw_hover_text("Retrieves the download link and sends it to JDownloader.", text=None)
         imgui.separator()
         self.draw_game_finished_checkbox(game, f"{icons.flag_checkered} Finished")
         self.draw_game_installed_checkbox(game, f"{icons.download} Installed")
@@ -2342,6 +2388,11 @@ class MainGUI():
                     margin_x = 0
                     margin_y = (out_height - height) / 2
                 prev_pos = imgui.get_cursor_pos()
+                # Empty sides: blurred copy of the banner behind it (modules/visuals.py)
+                blurred = visuals.blurred_image(game) if (margin_x > 1 or margin_y > 1) else None
+                if blurred is not None and not blurred.missing and not blurred.error:
+                    blurred.render(out_width, out_height, *blurred.crop_to_ratio(out_width / out_height, fit=False), rounding=rounding)
+                    imgui.set_cursor_pos(prev_pos)
                 imgui.set_cursor_pos((prev_pos.x + margin_x, prev_pos.y + margin_y))
                 image_pos = imgui.get_cursor_screen_pos()
 
@@ -2414,14 +2465,7 @@ class MainGUI():
                 # the row in a child with an explicit horizontal bar.
                 # Without a child, ImGui clips same-line items at the
                 # popup boundary and the parent only scrolls vertically.
-                preview_height = self.scaled(globals.settings.previews_height)
-                if self.grabbing_previews_scrollbar:
-                    drag_delta = imgui.get_mouse_drag_delta()
-                    if self.resizing_previews_height or abs(drag_delta.y) > self.scaled(20.0):
-                        self.resizing_previews_height = True
-                        preview_height = min(max(self.scaled(20.0), preview_height + drag_delta.y), self.scaled(500.0))
-                    elif abs(drag_delta.x) > self.scaled(10.0):
-                        self.grabbing_previews_scrollbar = False
+                preview_height = self.scaled(200)
                 horizontal_flags = (
                     imgui.WINDOW_HORIZONTAL_SCROLLING_BAR |
                     imgui.WINDOW_ALWAYS_HORIZONTAL_SCROLLBAR |
@@ -2476,20 +2520,6 @@ class MainGUI():
                         self.dragging_previews = False
                     first = False
                 imgui.end_child()
-                mouse_pos = imgui.io.mouse_pos
-                item_rect_min = imgui.get_item_rect_min()
-                item_rect_max = imgui.get_item_rect_max()
-                if self.grabbing_previews_scrollbar or ((item_rect_min.x < mouse_pos.x and mouse_pos.x < item_rect_max.x) and
-                    (item_rect_max.y - imgui.style.scrollbar_size < mouse_pos.y and mouse_pos.y < item_rect_max.y)):
-                        if imgui.is_mouse_clicked():
-                            self.grabbing_previews_scrollbar = True
-                        if imgui.is_mouse_released():
-                            self.grabbing_previews_scrollbar = False
-                            if self.resizing_previews_height:
-                                drag_delta = imgui.get_mouse_drag_delta()
-                                globals.settings.previews_height = preview_height / globals.settings.interface_scaling
-                                async_thread.run(db.update_settings("previews_height"))
-                                self.resizing_previews_height = False
             imgui.push_text_wrap_pos()
 
             # Fullscreen image viewer
@@ -2508,16 +2538,13 @@ class MainGUI():
                 imgui.set_next_window_bg_alpha(0.75)
                 imgui.push_style_var(imgui.STYLE_POPUP_BORDERSIZE, 0)
                 if imgui.begin_popup(fullscreen_viewer_id, imgui.WINDOW_NO_SCROLLBAR):
-                    # The cover is image 0 and the previews come after it
-                    images_count = len(game.preview_images) + 1
-                    def cycle_fullscreen_viewer(diff: int):
-                        self.fullscreen_viewer_i = (self.fullscreen_viewer_i + diff) % images_count
-                        self.fullscreen_viewer_zoom = 1.0
                     if imgui.is_topmost() and not imgui.is_any_item_active():
                         if imgui.is_key_pressed(glfw.KEY_LEFT, repeat=True):
-                            cycle_fullscreen_viewer(-1)
+                            self.fullscreen_viewer_i = (self.fullscreen_viewer_i - 1) % (len(game.preview_images) + 1)
+                            self.fullscreen_viewer_zoom = 1.0
                         if imgui.is_key_pressed(glfw.KEY_RIGHT, repeat=True):
-                            cycle_fullscreen_viewer(+1)
+                            self.fullscreen_viewer_i = (self.fullscreen_viewer_i + 1) % (len(game.preview_images) + 1)
+                            self.fullscreen_viewer_zoom = 1.0
                         if imgui.is_key_pressed(glfw.KEY_ESCAPE) or (imgui.is_key_pressed(glfw.KEY_SPACE) and not fullscreen_viewer_start):
                             imgui.close_current_popup()
                             fullscreen_viewer_closed = True
@@ -2530,7 +2557,8 @@ class MainGUI():
                                 self.scroll_energy = 0.0
                             else:
                                 diff = -1 if imgui.io.mouse_wheel > 0 else +1
-                            cycle_fullscreen_viewer(diff)
+                            self.fullscreen_viewer_i = (self.fullscreen_viewer_i + diff) % (len(game.preview_images) + 1)
+                            self.fullscreen_viewer_zoom = 1.0
                         if int(imgui.get_scroll_y() - 1.0):
                             if globals.settings.scroll_smooth:
                                 diff = imgui.io.delta_time * self.scroll_energy * 4
@@ -2559,50 +2587,7 @@ class MainGUI():
                         crop = ((crop[0][0] + off_x, crop[0][1] + off_y), (crop[1][0] + off_x, crop[1][1] + off_y))
                         crop = ((crop[0][0] / zoom, crop[0][1] / zoom), (crop[1][0] / zoom, crop[1][1] / zoom))
                         image.render(*size, *crop)
-                    image_clicked = imgui.is_item_clicked()
-                    nav_clicked = False
-
-                    if images_count > 1:
-                        # Clickable arrows on the sides and an image counter at the bottom
-                        draw_list = imgui.get_window_draw_list()
-                        mouse_pos = imgui.io.mouse_pos
-
-                        # The click that opens the viewer from the cover must not also hit an arrow
-                        mouse_clicked = imgui.is_mouse_clicked() and not imgui.is_window_appearing()
-
-                        # Same look as the info popup's carousel arrows
-                        imgui.push_font(imgui.fonts.big)
-                        arrow_size = imgui.calc_text_size(icons.arrow_left_drop_circle)
-                        margin = self.scaled(20)
-                        y = (size.y - arrow_size.y) / 2
-                        col = imgui.get_color_u32_rgba(*globals.settings.style_text_dim)
-                        for diff, icon, x in (
-                            (-1, icons.arrow_left_drop_circle, margin),
-                            (+1, icons.arrow_right_drop_circle, size.x - margin - arrow_size.x),
-                        ):
-                            draw_list.add_text(x, y, col, icon)
-                            hovered = x <= mouse_pos.x <= x + arrow_size.x and y <= mouse_pos.y <= y + arrow_size.y
-                            if hovered and mouse_clicked:
-                                nav_clicked = True
-                                cycle_fullscreen_viewer(diff)
-
-                        # Draw the image counter at the bottom of the viewer
-                        imgui.pop_font()
-                        imgui.push_font(imgui.fonts.bold)
-                        counter = f"{self.fullscreen_viewer_i + 1} / {images_count}"
-                        counter_size = imgui.calc_text_size(counter)
-                        padding = self.scaled(8)
-                        counter_x = (size.x - counter_size.x) / 2
-                        counter_y = size.y - margin - counter_size.y
-                        draw_list.add_rect_filled(
-                            counter_x - padding * 1.5, counter_y - padding,
-                            counter_x + counter_size.x + padding * 1.5, counter_y + counter_size.y + padding,
-                            imgui.get_color_u32_rgba(0, 0, 0, 0.5), rounding=counter_size.y / 2 + padding,
-                        )
-                        draw_list.add_text(counter_x, counter_y, imgui.get_color_u32_rgba(*globals.settings.style_text), counter)
-                        imgui.pop_font()
-
-                    if image_clicked and not nav_clicked:
+                    if imgui.is_item_clicked():
                         imgui.close_current_popup()
                         fullscreen_viewer_closed = True
                     imgui.end_popup()
@@ -2630,6 +2615,17 @@ class MainGUI():
             self.draw_game_archive_button(game, label_off=f"{icons.archive_outline} Archive", label_on=f"{icons.archive_off_outline} Unarchive")
             imgui.same_line()
             self.draw_game_remove_button(game, f"{icons.trash_can_outline} Remove")
+            if imgui.button(f"{icons.archive_arrow_down_outline} Import Update"):
+                importupdate.import_update(game)
+            if installdate.engine_now(game) == "Ren'Py":
+                imgui.same_line()
+                cheats_on = installdate.cheats_enabled(game)
+                if imgui.button(f"{icons.cheese} {'Disable' if cheats_on else 'Enable'} Cheats"):
+                    installdate.toggle_cheats(game)
+            if game.installed != game.version and not game.custom and game.downloads:
+                imgui.same_line()
+                if imgui.button(f"{icons.download} Download Update"):
+                    installdate.start_download(game)
 
             # Minimum width to avoid content shifting around and clipping (like Archive/Unarchive)
             imgui.dummy(self.scaled(790), 0)
@@ -2711,6 +2707,21 @@ class MainGUI():
                 imgui.text_disabled("Personal Rating:")
                 imgui.same_line()
                 self.draw_game_rating_widget(game)
+
+                imgui.table_next_row()
+
+                imgui.table_next_column()
+                imgui.text_disabled("Installed On:")
+                imgui.same_line()
+                imgui.text(game.installed_on_display or "Unknown")
+                self.draw_hover_text(
+                    "Date of the most recent \"Installed\" event in the timeline.\n"
+                    "Set when you tick Installed, or detected from the game files\n"
+                    "with right click > Scan Local Copy (also done after each Refresh).",
+                    text=None,
+                )
+
+                imgui.table_next_column()
 
                 imgui.table_next_row()
 
@@ -3311,6 +3322,7 @@ class MainGUI():
                 "simple_human",
                 "SirKat",
                 "SmurfyBlue",
+                "WhiteVanDaycare",
                 "yohudood",
                 "And others that I might be forgetting"
             ]:
@@ -3585,6 +3597,16 @@ class MainGUI():
                             key = lambda id: - globals.games[id].last_launched.value
                         case cols.added_on.index:
                             key = lambda id: - globals.games[id].added_on.value
+                        case cols.installed_on.index:
+                            key = lambda id: - globals.games[id].installed_on
+                        case cols.size.index:
+                            key = lambda id: - installdate.local_size(globals.games[id])
+                        case cols.engine.index:
+                            key = lambda id: (installdate.local_engine(globals.games[id]) or globals.games[id].type.name).lower()
+                        case cols.cheats.index:
+                            key = lambda id: installdate.local_cheats_display(globals.games[id]).lower() or "~"
+                        case cols.toy.index:
+                            key = lambda id: toy.toy_display(globals.games[id]).lower() or "~"
                         case cols.finished.index:
                             key = lambda id: 2 if not globals.games[id].finished else 1 if globals.games[id].finished == (globals.games[id].installed or globals.games[id].version) else 0
                         case cols.installed.index:
@@ -3812,6 +3834,20 @@ class MainGUI():
                             imgui.push_font(imgui.fonts.mono)
                             imgui.text(game.added_on.display)
                             imgui.pop_font()
+                        case cols.installed_on.index:
+                            imgui.push_font(imgui.fonts.mono)
+                            imgui.text(game.installed_on_display or "Unknown")
+                            imgui.pop_font()
+                        case cols.size.index:
+                            imgui.push_font(imgui.fonts.mono)
+                            imgui.text(installdate.local_size_display(game) or "-")
+                            imgui.pop_font()
+                        case cols.engine.index:
+                            imgui.text(installdate.local_engine(game) or game.type.name)
+                        case cols.cheats.index:
+                            imgui.text(installdate.local_cheats_display(game))
+                        case cols.toy.index:
+                            imgui.text(toy.toy_display(game))
                         case cols.finished.index:
                             self.draw_game_finished_checkbox(game)
                         case cols.installed.index:
@@ -3962,12 +3998,17 @@ class MainGUI():
         rounding = self.scaled(globals.settings.style_corner_radius)
         imgui.begin_group()
         # Image
+        img_x, img_y = imgui.get_cursor_screen_pos()
         if game.image.error:
             showed_img = imgui.is_rect_visible(cell_width, img_height)
             self.draw_game_image_error(game, game.image, cell_width, img_height)
         else:
             crop = game.image.crop_to_ratio(globals.settings.cell_image_ratio, fit=globals.settings.fit_images)
             showed_img = game.image.render(cell_width, img_height, *crop, rounding=rounding, flags=imgui.DRAW_ROUND_CORNERS_TOP)
+        if showed_img:
+            # Slideshow of the thread screenshots on hover, UPDATE / NEW badge (modules/showcase.py)
+            showcase.cell_hover(game, img_x, img_y, cell_width, img_height, rounding, imgui.is_item_hovered())
+            showcase.draw_badge(game, img_x, img_y, cell_width, self.scaled(1))
         # Alignments
         imgui.indent(side_indent)
         wrap_pos = pos.x + cell_width - side_indent
@@ -4093,6 +4134,10 @@ class MainGUI():
             _cluster_text(cols.last_launched.name, game.last_launched.display or "Never")
         if cols.added_on.enabled:
             _cluster_text(cols.added_on.name, game.added_on.display)
+        if cols.installed_on.enabled:
+            _cluster_text(cols.installed_on.name, game.installed_on_display or "Unknown")
+        if cols.size.enabled and installdate.local_size(game):
+            _cluster_text(cols.size.name, installdate.local_size_display(game))
         if cols.rating.enabled:
             if imgui.get_cursor_pos_x() + imgui.calc_text_size(icons.star * 5).x > wrap_pos:
                 imgui.dummy(0, 0)
@@ -4148,7 +4193,11 @@ class MainGUI():
                 )
                 imgui.pop_alpha()
             else:
-                draw_list.add_rect_filled(*rect_min, *rect_max, bg_col, rounding=rounding, flags=imgui.DRAW_ROUND_CORNERS_ALL)
+                # Tint and frame in the main colour of the banner (modules/visuals.py)
+                tint = visuals.card_colors(game)
+                draw_list.add_rect_filled(*rect_min, *rect_max, tint[0] if tint else bg_col, rounding=rounding, flags=imgui.DRAW_ROUND_CORNERS_ALL)
+                if tint:
+                    draw_list.add_rect(*rect_min, *rect_max, tint[1], rounding=rounding, flags=imgui.DRAW_ROUND_CORNERS_ALL, thickness=self.scaled(1.5))
         else:
             imgui.dummy(cell_width, cell_height)
         draw_list.channels_merge()
@@ -4164,6 +4213,8 @@ class MainGUI():
             column_count -= 1
         expand = cell_width > min_expand_width
         img_height = cell_width / globals.settings.cell_image_ratio
+        visuals.draw_hero(self, self.show_games_ids[self.current_tab])
+        showcase.draw_shelf(self, self.show_games_ids[self.current_tab])
         imgui.push_style_var(imgui.STYLE_CELL_PADDING, (padding, padding))
         if imgui.begin_table(
             "###game_grid",
@@ -4492,6 +4543,7 @@ class MainGUI():
                 imgui.end_popup()
 
         imgui.begin_child("Settings")
+        toy.draw_sidebar_stop(right_width)
 
         if draw_settings_section("Filter", collapsible=False):
             draw_settings_label(f"Total games count: {len(globals.games)}")
@@ -4656,6 +4708,200 @@ class MainGUI():
                                 imgui.set_cursor_pos(pos)
                                 self.draw_type_widget(type)
                             imgui.end_combo()
+
+            imgui.end_table()
+            imgui.spacing()
+
+        if draw_settings_section("Library tools"):
+            draw_settings_label("Statistics:", "Play time per week, top developers / tags, space per drive, engines, completion.")
+            if imgui.button("Open###lt_stats", width=right_width):
+                showcase.open_stats_popup()
+            draw_settings_label(
+                "Compression:",
+                "Windows' own compression of game folders (like CompactGUI): less space, games run as before, reversible.\n"
+                "Shows the estimated gain per game first. NTFS drives only."
+            )
+            if imgui.button("Open###lt_compress", width=right_width):
+                pctools.open_compression_popup()
+            p = installdate.prefs()
+            for key, label, tip in (
+                ("hover_preview", "Hover slideshow:", "Thread screenshots play in the card when the mouse stays on a cover (grid view)."),
+                ("shelf", "To play shelf:", "Row above the grid with the games updated since you last played them (and UPDATE / NEW badges)."),
+                ("watch_downloads", "Watch downloads:", "Proposes Import Update when an archive named like one of your games finishes downloading."),
+                ("cheats_default", "Cheats in Ren'Py games:", "Adds the developer console (Shift+O) to every Ren'Py game at each scan, new version folders too.\n"
+                                                             "Right click > Disable Cheats on a game keeps it off for that game."),
+                ("hero", "Continue banner:", "Wide banner above the grid with the game of this tab you played last: Play / Details."),
+                ("game_colors", "Game colours:", "Card frame in the main colour of its banner, blurred banner behind the image of the info popup."),
+                ("upscale", "Sharper banners:", "Banners narrower than 1600 px are enlarged once with Real-ESRGAN (graphics card, offline).\n"
+                                                "The originals are kept: untick to see them again."),
+            ):
+                draw_settings_label(label, tip)
+                changed, value = imgui.checkbox(f"###lt_{key}", bool(p.get(key, True)))
+                if changed:
+                    p[key] = value
+                    installdate.save_prefs()
+                    if key in ("upscale", "game_colors"):
+                        visuals.apply_all()
+            draw_settings_label("Download folders:", "Folders watched for downloaded archives, separated by ; (default: your Downloads folder).")
+            imgui.set_next_item_width(right_width)
+            changed, value = imgui.input_text("###lt_dirs", "; ".join(p.get("watch_dirs") or []), 1000)
+            if changed:
+                p["watch_dirs"] = [d.strip().strip('"') for d in value.split(";") if d.strip()]
+                installdate.save_prefs()
+            draw_settings_label("Lossless Scaling:", "Path of LosslessScaling.exe (empty = found in your Steam libraries).")
+            imgui.set_next_item_width(right_width)
+            changed, value = imgui.input_text("###lt_ls_path", p.get("lossless_path", ""), 400)
+            if changed:
+                p["lossless_path"] = value.strip().strip('"')
+                installdate.save_prefs()
+            draw_settings_label("LS hotkey / delay:", "The Scale hotkey set in Lossless Scaling (default ctrl+alt+s), and the seconds\n"
+                                "the game window must stay in front before it is sent.")
+            imgui.set_next_item_width(right_width * 0.6)
+            changed, value = imgui.input_text("###lt_ls_key", p.get("lossless_hotkey", "ctrl+alt+s"), 40)
+            if changed:
+                p["lossless_hotkey"] = value.strip().lower()
+                installdate.save_prefs()
+            imgui.same_line()
+            imgui.set_next_item_width(right_width * 0.4 - imgui.style.item_spacing.x)
+            changed, value = imgui.input_float("###lt_ls_delay", float(p.get("lossless_delay", 4.0)), 0, 0, "%.0f s")
+            if changed:
+                p["lossless_delay"] = max(1.0, min(60.0, value))
+                installdate.save_prefs()
+            ls_exe = pctools.find_lossless()
+            draw_settings_label("LS found:", str(ls_exe or "Not found in your Steam libraries: set the path above."))
+            imgui.text("Yes" if ls_exe else "No")
+            draw_settings_label(
+                "LS frame generation:",
+                "Games set to 'frame generation' (right click > Display profile) use your Lossless Scaling profile with\n"
+                "frame generation: Lossless Scaling picks it from the game's exe name. Copy this list and paste it in the\n"
+                "filter of that profile (Lossless Scaling > profile > Edit), again after adding games."
+            )
+            if imgui.button("Copy filter###lt_ls_fg", width=right_width):
+                callbacks.clipboard_copy(pctools.framegen_filter())
+            # Real-ESRGAN (sharper banners)
+            up_exe = visuals.find_upscaler()
+            draw_settings_label(
+                "Real-ESRGAN:",
+                "realesrgan-ncnn-vulkan.exe (github.com/xinntao/Real-ESRGAN, Releases, ...-windows.zip, unzipped).\n"
+                "Empty = looked for in <F95Checker data>\\realesrgan and in your Downloads folder.\n"
+                f"Now: {up_exe or 'not found'}"
+            )
+            imgui.set_next_item_width(right_width)
+            changed, value = imgui.input_text("###lt_up_path", p.get("upscale_path", ""), 400)
+            if changed:
+                p["upscale_path"] = value.strip().strip('"')
+                installdate.save_prefs()
+            draw_settings_label("Banner model:", "Photos / 3D renders suits most games; Drawings / anime for 2D art.\n"
+                                                 "Changing it enlarges every banner again.")
+            models = list(visuals.MODELS)
+            imgui.set_next_item_width(right_width)
+            current = models.index(p.get("upscale_model")) if p.get("upscale_model") in models else 0
+            changed, index = imgui.combo("###lt_up_model", current, [visuals.MODELS[m] for m in models])
+            if changed and models[index] != p.get("upscale_model"):
+                p["upscale_model"] = models[index]
+                installdate.save_prefs()
+                visuals.redo_upscale()
+                visuals.save_index()
+                visuals.apply_all()
+            st = visuals.upscale_stats()
+            draw_settings_label("Banners:", "Enlarged / already sharp / animated (left as they are) / failed / waiting.\n"
+                                            "One at a time in the background, about a second each with the graphics card.")
+            imgui.text(f"{st['ok']} enlarged, {st['big']} sharp, {st['animated']} animated, {st['error']} failed, {st['todo']} waiting")
+            if st["error"]:
+                imgui.same_line()
+                if imgui.small_button("Retry###lt_up_retry"):
+                    visuals.retry_upscale_errors()
+            # Ren'Py preferences for every game
+            rp = installdate.renpy_prefs()
+            draw_settings_label(
+                "Ren'Py preferences:",
+                "Your usual settings in every Ren'Py game (zz_f95checker_prefs.rpy, added at each scan). Applied once,\n"
+                "and only where the game is still at its default: what you change in a game stays.\n"
+                "A changed setting here is applied once more in each game."
+            )
+            rp_changed, rp["on"] = imgui.checkbox("###lt_rp_on", rp["on"])
+            if rp["on"]:
+                c, rp["skip_unseen"] = imgui.checkbox("Skip also unread text###lt_rp_skip", rp["skip_unseen"])
+                rp_changed |= c
+                for key, label, lo, hi in (("afm_time", "Auto-forward (1 fast .. 40 slow)", 1, 40), ("music", "Music volume %", 0, 100),
+                                           ("sound", "Sound volume %", 0, 100), ("voice", "Voice volume %", 0, 100)):
+                    keep = rp[key] is None
+                    c, keep_new = imgui.checkbox(f"keep the game's###lt_rp_keep_{key}", keep)
+                    rp_changed |= c
+                    if c:
+                        rp[key] = None if keep_new else (15 if key == "afm_time" else 70)
+                    if rp[key] is not None:
+                        imgui.same_line()
+                        imgui.set_next_item_width(right_width * 0.5)
+                        c, rp[key] = imgui.slider_int(f"{label}###lt_rp_{key}", int(rp[key]), lo, hi)
+                        rp_changed |= c
+                    else:
+                        imgui.same_line()
+                        imgui.text_disabled(label)
+                modes = ["keep the game's", "windowed", "fullscreen"]
+                index = 0 if rp["fullscreen"] is None else 2 if rp["fullscreen"] else 1
+                imgui.set_next_item_width(right_width)
+                c, index = imgui.combo("###lt_rp_full", index, modes)
+                if c:
+                    rp["fullscreen"] = None if index == 0 else index == 2
+                    rp_changed = True
+            if rp_changed:
+                installdate.save_prefs()
+            if imgui.button("Apply to all Ren'Py games now###lt_rp_apply", width=right_width):
+                async def _apply_prefs():
+                    count = await asyncio.get_running_loop().run_in_executor(None, installdate.apply_renpy_prefs_all)
+                    utils.push_popup(msgbox.msgbox, "Ren'Py preferences", f"{count} Ren'Py game(s) updated.", MsgBox.info)
+                async_thread.run(_apply_prefs())
+            # Drive balance
+            draw_settings_label(
+                "Drives:",
+                "Moves the games you have not played for the longest time from the fullest drives to the one with\n"
+                "the most room (plan shown first, nothing moves without your OK)."
+            )
+            if imgui.button("Balance###lt_balance", width=right_width):
+                pctools.open_balance_popup()
+
+            imgui.end_table()
+            imgui.spacing()
+
+        if draw_settings_section("Toy & Discover"):
+            draw_settings_label(
+                "Connected toy:",
+                "Intiface Central (Lovense Max 2...): connection, safety caps, emergency stop, patterns,\n"
+                "per-game sync (Ren'Py animations, gamepad rumble, audio).\n"
+                "Emergency stop anywhere: Pause key or Ctrl+Alt+End."
+            )
+            if imgui.button("Panel###toy_panel", width=right_width):
+                toy.open_panel()
+            draw_settings_label(
+                "Built-in toy support:",
+                "Checks the files of all your games for built-in Intiface / Buttplug or Lovense support.\n"
+                "Found games show in the Toy column (list view, right click a header to enable it)."
+            )
+            if imgui.button("Scan###toy_native", width=right_width):
+                async_thread.run(toy.scan_native_all())
+            draw_settings_label(
+                "Animation scripts:",
+                "Analyses the animations of all your Ren'Py games (toy sync on) and writes their toy scripts.\n"
+                "Only the missing ones, several at once. Long the first time: cancel and restart at will, nothing is lost.\n"
+                "Progress at the top of the Toy panel."
+            )
+            if imgui.button("Generate all###toy_gen_all_lib", width=right_width):
+                async_thread.run(toy.generate_all_scripts())
+                toy.open_panel()
+            draw_settings_label(
+                "Recommendations:",
+                "Games you don't have yet, ranked by your tastes: tags of the games you rate high and play long,\n"
+                "developers you play, F95 rating and popularity. Uses F95zone Latest Updates (login needed)."
+            )
+            if imgui.button("Open###discover_reco", width=right_width):
+                discover.open_recommend_popup()
+            draw_settings_label(
+                "Mods & extras:",
+                "Mod / patch / walkthrough / extras links found in the download section of your installed games' threads."
+            )
+            if imgui.button("List###discover_mods", width=right_width):
+                discover.open_mods_popup()
 
             imgui.end_table()
             imgui.spacing()
@@ -5453,6 +5699,64 @@ class MainGUI():
                 ).tick)
 
             draw_settings_label(
+                "Local scan:",
+                "Scans your game folders for ALL games (also done automatically after each full Refresh):\n"
+                " - executables: fixed after moving / renaming folders, found by name (or acronym) for new games,\n"
+                "   switched to a newer version folder of the same game;\n"
+                " - Installed: ticked when your local copy is the latest version, un-ticked when it is older;\n"
+                " - Installed On: the day the files of your version landed on your disk (saves, logs, caches ignored);\n"
+                " - Last Launched: last time you played, read from your saves / logs (also when launched outside F95Checker);\n"
+                " - older version folders still on disk are listed, with a button to delete them (saves are backed up first).\n"
+                "Library folders = Set exe dir + the drive folder of every executable (eg: E:\\Games).\n"
+                "Sort by the Installed On column (right click a column header in list view to enable it)."
+            )
+            scan_clicked = imgui.button("Scan", width=right_width)
+            if scan_clicked and utils.is_refreshing():
+                utils.push_popup(
+                    msgbox.msgbox, "Scan local library",
+                    "A refresh is running: the local scan runs by itself at its end (same progress bar).\n"
+                    "Use Scan when no refresh is running.",
+                    MsgBox.info,
+                )
+            elif scan_clicked:
+                buttons = {
+                    f"{icons.check} Yes": lambda: utils.start_refresh_task(
+                        installdate.scan_library(*globals.games.values(), manual=True),
+                        reset_bg_timers=False,
+                    ),
+                    f"{icons.cancel} No": None
+                }
+                utils.push_popup(
+                    msgbox.msgbox, "Scan local library",
+                    "Scan all your game folders now?\n"
+                    " - executables are fixed / found / switched to newer version folders,\n"
+                    " - Installed is ticked or un-ticked from your local version,\n"
+                    " - \"Installed\" timeline events more recent than the files are replaced\n"
+                    "   by the date of the files.\n"
+                    "\n"
+                    f"Library folders: {', '.join(str(r) for r in installdate.library_roots(globals.games.values())) or 'none (set the exe dir)'}",
+                    MsgBox.warn,
+                    buttons
+                )
+
+            draw_settings_label(
+                "Updates to do:",
+                "Games where your local copy is older than the latest version, most recently played first.\n"
+                "Shows what changed since your version, warns when the disk is too full, a Download button "
+                "(host page in your browser, or JDownloader) and an Import button that installs the downloaded archive."
+            )
+            if imgui.button("Open", width=right_width):
+                installdate.open_updates_popup()
+
+            draw_settings_label(
+                "Finished games:",
+                "Games completed by their developer that you have not played for 60+ days: tick them as Finished, "
+                "and optionally uninstall them (saves are kept)."
+            )
+            if imgui.button("Review", width=right_width):
+                installdate.open_finished_popup()
+
+            draw_settings_label(
                 "Exe Wrappers:",
                 "Customize how executables are launched by default for each game engine / media type.\n"
                 "Useful for specifying custom ways to open them, like Wine/Proton for Windows games on Linux/macOS or a media player for animation/comic collections.\n"
@@ -5984,17 +6288,14 @@ class MainGUI():
                 else:
                     space_after = 0
 
-                if errored and download.state != download.State.Downloading:
-                    ratio = 0.0
-                else:
-                    ratio = download.progress / (download.total or 1)
+                ratio = download.progress / (download.total or 1)
                 downd = download.progress
                 speed = downd / ((download.current - download.start) or 1)
                 width = imgui.get_content_region_available_width() - space_after
                 height = imgui.get_frame_height()
                 imgui.progress_bar(ratio, (width, height))
                 if download.state == download.State.Downloading:
-                    text = f"{utils.sizeof_fmt(downd):>7} {min(ratio, 0.99):>3.0%} ({utils.sizeof_fmt(speed):>7}/s)"
+                    text = f"{utils.sizeof_fmt(downd):>7} {min(ratio, 99):>3.0%} ({utils.sizeof_fmt(speed):>7}/s)"
                 elif download.state == download.State.Stopped:
                     if not errored:
                         text = "Done!"
@@ -6037,8 +6338,6 @@ class MainGUI():
                     imgui.same_line()
                     if imgui.button(icons.trash_can_outline):
                         async_thread.run(download.delete())
-                else:
-                    imgui.dummy(0, 0)
             for download_id in to_remove:
                 del api.downloads[download_id]
 
