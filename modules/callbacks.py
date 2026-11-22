@@ -443,10 +443,12 @@ def _track_launch(game: Game, process):
 
 async def _launch_game_exe(game: Game, executable: str):
     try:
-        from modules import toy
+        from modules import pctools, toy
         await toy.before_launch(game)  # Ren'Py toy sync script must exist before the game loads
+        await pctools.before_launch(game)  # ReShade on / off for this game
         _track_launch(game, await _launch_exe(executable, wrapper=_resolve_launch_wrapper(game)))
         toy.on_game_launched(game)
+        pctools.on_game_launched(game)  # Lossless Scaling
         game.last_launched = time.time()
         exe = pathlib.Path(executable)
         if utils.is_uri(executable):

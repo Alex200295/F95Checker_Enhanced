@@ -1668,6 +1668,8 @@ async def refresh(*games: Game, full=False, notifs=True, force_archived=False, f
     notifs = notifs and globals.settings.check_notifs
     globals.refresh_progress += 1
     globals.refresh_total += sum(len(chunk) for chunk in fast_queue) + bool(notifs)
+    if not games:
+        globals.refresh_total += len(globals.games)  # Local scan at the end (installdate), counted now: no 100% -> 51% jump
     updates: dict[int, OldGame] = {}
     api_errors: dict[int, str] = {}
     missing_threads: list[int] = []
@@ -1748,7 +1750,7 @@ async def refresh(*games: Game, full=False, notifs=True, force_archived=False, f
         # Local library scan: executables, local updates (Installed), install dates. Popup only if something changed.
         from modules import installdate
         try:
-            await installdate.scan_library(manual=False)
+            await installdate.scan_library(manual=False, reserved=True)
         except Exception:
             print(f"[LocalScan] Automatic scan failed: {error.traceback()}")
 
