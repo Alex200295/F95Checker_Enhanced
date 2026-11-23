@@ -14,7 +14,11 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          - { os: "windows-2022",   python: "3.12.10", cx-freeze: "8.7.0", cx-logging: "v3.2.1", astcenc: "5.7.0", compressonator: "4.5.52", artifact: "Windows" }
+          - { os: "windows-2022",   python: "3.12.10", cx-freeze: "8.7.0", cx-logging: "v3.2.1", astcenc: "5.7.0", compressonator: "4.5.52", artifact: "Windows",
+              realesrgan: "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip",
+              rife: "https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-windows.zip",
+              ffmpeg: "https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-essentials_build.zip",
+              depth: "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx" }
           - { os: "ubuntu-22.04",   python: "3.12.14", cx-freeze: "8.7.0", cx-logging: "",       astcenc: "5.7.0", compressonator: "4.5.52", artifact: "Linux" }
           - { os: "macos-15-intel", python: "3.12.10", cx-freeze: "8.7.0", cx-logging: "",       astcenc: "5.7.0", compressonator: "",       artifact: "macOS-x64" }
           - { os: "macos-15",       python: "3.12.10", cx-freeze: "8.7.0", cx-logging: "",       astcenc: "5.7.0", compressonator: "",       artifact: "macOS-arm64" }
@@ -113,6 +117,40 @@ jobs:
           7z x compressonatorcli.zip
           rm -rf compressonatorcli-*/{documents,images}
           mv ./compressonatorcli-*/ ./dist/lib/compressonator/
+
+      - name: "Bundle F95Checker Enhanced tools (Windows)"
+        if: "runner.os == 'Windows'"
+        shell: bash
+        run: |
+          # Shipped in <exe folder>/tools so HD & 60 fps, sharper banners and 3D pictures work with nothing to install.
+          # Licenses: THIRD_PARTY_NOTICES.md (Real-ESRGAN BSD-3, RIFE MIT, ffmpeg GPLv3, Depth Anything V2 Small Apache-2.0).
+          set -e
+          mkdir -p ./dist/tools/
+          cp ./THIRD_PARTY_NOTICES.md ./dist/
+          # Real-ESRGAN (sharper banners, HD pictures)
+          curl -fL -o esrgan.zip ${{ matrix.config.realesrgan }}
+          7z x esrgan.zip -o./esrgan_tmp
+          exe=$(find ./esrgan_tmp -name realesrgan-ncnn-vulkan.exe | head -n 1)
+          mv "$(dirname "$exe")" ./dist/tools/realesrgan
+          find ./dist/tools/realesrgan -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.mp4' -o -iname '*.gif' \) -delete
+          # RIFE (60 fps animations): only the model used by F95Checker (rife-v4.6, else the default rife-v2.3)
+          curl -fL -o rife.zip ${{ matrix.config.rife }}
+          7z x rife.zip -o./rife_tmp
+          exe=$(find ./rife_tmp -name rife-ncnn-vulkan.exe | head -n 1)
+          mv "$(dirname "$exe")" ./dist/tools/rife
+          keep=rife-v4.6
+          [ -d ./dist/tools/rife/$keep ] || keep=rife-v2.3
+          find ./dist/tools/rife -mindepth 1 -maxdepth 1 -type d -name 'rife*' ! -name "$keep" -exec rm -rf {} +
+          # ffmpeg (60 fps animations, toy scripts): ffmpeg + ffprobe only
+          curl -fL -o ffmpeg.zip ${{ matrix.config.ffmpeg }}
+          7z x ffmpeg.zip -o./ffmpeg_tmp
+          mkdir -p ./dist/tools/ffmpeg/bin/
+          mv ./ffmpeg_tmp/*/bin/ffmpeg.exe ./ffmpeg_tmp/*/bin/ffprobe.exe ./dist/tools/ffmpeg/bin/
+          mv ./ffmpeg_tmp/*/LICENSE* ./dist/tools/ffmpeg/ || true
+          # Depth Anything V2 Small, ONNX (3D & living pictures)
+          mkdir -p ./dist/tools/depth/
+          curl -fL -o ./dist/tools/depth/depth_anything_v2_small.onnx ${{ matrix.config.depth }}
+          ls -la ./dist/tools/*
 
       - name: "Bundle astcenc+compressonator (Linux)"
         if: "runner.os == 'Linux'"
