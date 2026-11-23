@@ -26,6 +26,7 @@ import zlib
 
 from common.structs import (
     Game,
+    MsgBox,
 )
 from external import (
     async_thread,
@@ -34,6 +35,7 @@ from modules import (
     globals,
     icons,
     installdate,
+    msgbox,
     toygen,
     utils,
 )
@@ -372,6 +374,195 @@ def game_dir_of(game: Game) -> pathlib.Path | None:
     if exe is None or not (exe.parent / "game").is_dir():
         return None
     return exe.parent / "game"
+
+
+# ---------------------------------------------------------------------------
+# In-game cheat menu (right click > In-game cheat menu): Shift+C in the game
+# ---------------------------------------------------------------------------
+
+MENU_FILE = "zz_f95checker_cheatmenu.rpy"
+MENU_CATEGORIES = ["Money", "Relationships", "Stats", "Items", "Flags", "Other"]     # "Time (careful)" left out
+MENU_MAX_PER_CATEGORY = 400
+
+MENU_TEMPLATE = """# Added by F95Checker (right click > In-game cheat menu). Delete this file to remove it.
+# In the game: Shift+C opens / closes the menu. Variables found in this game's scripts ({count}).
+# Save before changing anything: it changes your current game, like the console would.
+init 999 python:
+    _f95_cm_cats = {cats}
+
+    def _f95_cm_get(name):
+        import store
+        return getattr(store, name, None)
+
+    def _f95_cm_set(name, value):
+        import store
+        setattr(store, name, value)
+
+    def _f95_cm_add(name, step):
+        value = _f95_cm_get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            value = 0
+        _f95_cm_set(name, value + step)
+
+    def _f95_cm_flip(name):
+        _f95_cm_set(name, not bool(_f95_cm_get(name)))
+
+    def _f95_cm_show(name):
+        value = _f95_cm_get(name)
+        if value is None:
+            return "-"
+        if value is True or value is False:
+            return "ON" if value else "OFF"
+        if isinstance(value, float):
+            return str(round(value, 2))
+        return str(value)
+
+    config.keymap["f95_cheat_menu"] = ["shift_K_c"]
+    config.underlay.append(renpy.Keymap(f95_cheat_menu=ToggleScreen("f95_cheat_menu")))
+
+screen f95_cheat_menu():
+    zorder 1500
+    modal True
+    default cat = 0
+    key "game_menu" action Hide("f95_cheat_menu")
+    frame:
+        xalign 0.5
+        yalign 0.5
+        xsize int(config.screen_width * 0.62)
+        ysize int(config.screen_height * 0.84)
+        background "#101216e8"
+        padding (24, 18)
+        vbox:
+            spacing 10
+            text "F95Checker cheats  -  Shift+C or Esc closes  -  save first" size 24 color "#ffffff"
+            hbox:
+                spacing 6
+                box_wrap True
+                for i, entry in enumerate(_f95_cm_cats):
+                    textbutton (entry[0] + " (" + str(len(entry[1])) + ")"):
+                        action SetScreenVariable("cat", i)
+                        padding (10, 4)
+                        background ("#ffd27f40" if cat == i else "#ffffff18")
+                        hover_background "#ffffff40"
+                        text_size 20
+                        text_color ("#ffd27f" if cat == i else "#ffffff")
+            viewport:
+                scrollbars "vertical"
+                mousewheel True
+                draggable True
+                ysize int(config.screen_height * 0.84) - 150
+                vbox:
+                    spacing 4
+                    for item in _f95_cm_cats[cat][1]:
+                        hbox:
+                            spacing 8
+                            text item[0] size 20 color "#dddddd" xminimum int(config.screen_width * 0.22)
+                            text _f95_cm_show(item[0]) size 20 color "#7fd7ff" xminimum 130
+                            if item[2] == "b":
+                                textbutton "Switch" action Function(_f95_cm_flip, item[0]) padding (8, 2) background "#ffffff18" hover_background "#ffffff40" text_size 18 text_color "#ffffff"
+                            else:
+                                for step in (-10, -1, 1, 10):
+                                    textbutton ("%+d" % step) action Function(_f95_cm_add, item[0], step) padding (8, 2) background "#ffffff18" hover_background "#ffffff40" text_size 18 text_color "#ffffff"
+                                if item[1] is not None:
+                                    textbutton "MAX" action Function(_f95_cm_set, item[0], item[1]) padding (8, 2) background "#ffd27f30" hover_background "#ffd27f60" text_size 18 text_color "#ffd27f"
+            textbutton "Close" action Hide("f95_cheat_menu") xalign 1.0 padding (10, 4) background "#ffffff18" hover_background "#ffffff40" text_size 20 text_color "#ffffff"
+"""
+
+
+def menu_script(sheet: Sheet) -> str | None:
+    """Content of zz_f95checker_cheatmenu.rpy for these variables (Python 2 and 3: Ren'Py 6.99 to 8)."""
+    cats = []
+    count = 0
+    for category in MENU_CATEGORIES:
+        items = []
+        for var in sheet.variables:
+            if var.category != category or not var.name.isidentifier():
+                continue
+            if category == "Flags" or isinstance(var.start, bool):
+                items.append((var.name, None, "b"))
+            else:
+                top = _literal(var.suggested) if category in ("Money", "Relationships", "Stats", "Items") else None
+                items.append((var.name, top if isinstance(top, (int, float)) and not isinstance(top, bool) else None, "n"))
+            if len(items) >= MENU_MAX_PER_CATEGORY:
+                break
+        if items:
+            cats.append((category, items))
+            count += len(items)
+    if not cats:
+        return None
+    return MENU_TEMPLATE.format(count=count, cats=repr(cats))
+
+
+def menu_path(game: Game) -> pathlib.Path | None:
+    game_dir = game_dir_of(game)
+    if game_dir is None or not (game_dir.parent / "renpy").is_dir():
+        return None
+    return game_dir / MENU_FILE
+
+
+def menu_enabled(game: Game) -> bool:
+    path = menu_path(game)
+    return path is not None and path.is_file()
+
+
+def write_menu(game: Game) -> str:
+    """Blocking (reads every script). Writes / refreshes the menu file. Returns a message."""
+    path = menu_path(game)
+    if path is None:
+        return f"{game.name} is not a Ren'Py game (or its executable was not found)."
+    sheet = scan_game_dir(path.parent)
+    content = menu_script(sheet)
+    if content is None:
+        return f"No variable found in the scripts of {game.name}: nothing to put in the menu."
+    try:
+        if not (path.is_file() and path.read_text(encoding="utf-8") == content):
+            path.write_text(content, encoding="utf-8")
+            path.with_suffix(".rpyc").unlink(missing_ok=True)
+    except OSError as exc:
+        return f"Could not write the cheat menu of {game.name}: {exc}"
+    info = installdate.local_info().setdefault(game.id, {})
+    info["cheatmenu_ts"] = info.get("files_ts", 0)
+    installdate.save_local_info()
+    count = re.search(r"scripts \((\d+)\)", content)
+    return (f"In-game cheat menu added to {game.name} ({count.group(1) if count else '?'} variables).\n"
+            "Restart the game, then Shift+C opens it. Save before changing anything.")
+
+
+def remove_menu(game: Game) -> str:
+    path = menu_path(game)
+    if path is None or not path.is_file():
+        return "No cheat menu in this game."
+    try:
+        path.unlink()
+        path.with_suffix(".rpyc").unlink(missing_ok=True)
+    except OSError as exc:
+        return f"Could not remove it: {exc}"
+    return f"In-game cheat menu removed from {game.name} (restart the game)."
+
+
+def toggle_menu(game: Game):
+    """Right click: adds (scripts read in the background) or removes the in-game cheat menu."""
+    if menu_enabled(game):
+        utils.push_popup(msgbox.msgbox, "Cheat menu", remove_menu(game), MsgBox.info)
+        return
+
+    async def run():
+        import asyncio
+        message = await asyncio.get_running_loop().run_in_executor(None, write_menu, game)
+        utils.push_popup(msgbox.msgbox, "Cheat menu", message, MsgBox.info)
+
+    async_thread.run(run())
+
+
+def refresh_menu_if_needed(game: Game) -> bool:
+    """Local scan (blocking): the game changed since the menu was written -> written again with its new variables."""
+    if not menu_enabled(game):
+        return False
+    info = installdate.local_info().get(game.id, {})
+    if info.get("files_ts") and info.get("cheatmenu_ts") == info.get("files_ts"):
+        return False
+    write_menu(game)
+    return True
 
 
 # ---------------------------------------------------------------------------

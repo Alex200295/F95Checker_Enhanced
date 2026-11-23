@@ -66,6 +66,7 @@ EXCLUDED_DIRS = {
     "saves", "save", "savedata", "cache", "logs", "log", "__pycache__", "screenshots", "crashes", "temp", "tmp",
     # added next to games by F95Checker / graphics mods, not by a game update
     "reshade-shaders", "_f95checker_dlss5", "_disabled_mods", "_f95checker_old_engine", "_f95checker_mod_backup",
+    "_f95checker_original",
 }
 EXCLUDED_FILES = {
     "log.txt", "traceback.txt", "errors.txt", "persistent", "output_log.txt", "player.log", "player-prev.log",
@@ -74,6 +75,8 @@ EXCLUDED_FILES = {
     # adding them must not make the game look freshly updated
     "zz_f95checker_console.rpy", "zz_f95checker_console.rpyc", "zz_f95toy.rpy", "zz_f95toy.rpyc",
     "zz_f95checker_prefs.rpy", "zz_f95checker_prefs.rpyc", "zz_f95checker_unlock.rpy", "zz_f95checker_unlock.rpyc",
+    "zz_f95checker_cheatmenu.rpy", "zz_f95checker_cheatmenu.rpyc", "zz_f95checker_oversample.rpy", "zz_f95checker_oversample.rpyc",
+    "_f95checker_remaster.json",
     "dlss5_settings.rpy", "dlss5_settings.rpyc", "_f95dlss5.json",
     "dxgi.dll", "dxgi.dll.off", "reshade.ini", "reshadepreset.ini", "nvngx_dlss.dll", "nvngx_dlssnr.dll",
     "nvngx_dlss.dll.ver", "nvngx_dlssnr.dll.ver", "setup dlss5.bat", "uninstall dlss5.bat", "reshade_setup.exe",
@@ -822,6 +825,11 @@ async def scan_library(*games: Game, manual=True, reserved=False):
                 exe = _main_exe(game)
                 if info is not None and exe is not None:
                     info["engine"], info["cheats"] = detect_engine(exe)
+            try:
+                from modules import cheatsheet
+                await loop.run_in_executor(None, cheatsheet.refresh_menu_if_needed, game)
+            except Exception as exc:
+                _log(f"'{game.name}': in-game cheat menu not refreshed: {exc}")
         except Exception:
             _log(f"'{game.name}': error {error.traceback()}")
             report.errors.append(f"{game.name}: {error.text()}")
@@ -1892,10 +1900,11 @@ def fix_engine_conflicts(exe: pathlib.Path) -> list[str]:
 
 
 def installed_mod_paths(game: Game, exe: pathlib.Path | None = None) -> frozenset:
-    """Files added by "Install mod" (and the .rpyc Ren'Py compiles from their .rpy), normcase'd absolute paths."""
+    """Files added by "Install mod" (and the .rpyc Ren'Py compiles from their .rpy), and by "HD & 60 fps",
+    normcase'd absolute paths."""
     exe = exe or _main_exe(game)
     mods = local_info().get(game.id, {}).get("mods_installed") or []
-    if exe is None or not mods:
+    if exe is None:
         return frozenset()
     out = set()
     for mod in mods:
@@ -1903,6 +1912,12 @@ def installed_mod_paths(game: Game, exe: pathlib.Path | None = None) -> frozense
             out.add(os.path.normcase(str(exe.parent / rel)))
             if rel.lower().endswith(".rpy"):
                 out.add(os.path.normcase(str(exe.parent / (rel + "c"))))
+    try:
+        from modules import remaster
+        for rel in remaster.written_paths(game, exe):
+            out.add(os.path.normcase(str(exe.parent / rel)))
+    except Exception as exc:
+        _log(f"'{game.name}': HD & 60 fps files not read: {exc}")
     return frozenset(out)
 
 

@@ -75,6 +75,7 @@ from modules import (
     installdate,
     msgbox,
     pctools,
+    remaster,
     rpc_thread,
     rpdl,
     showcase,
@@ -1022,6 +1023,7 @@ class MainGUI():
                         or showcase.needs_redraw()
                         or visuals.needs_redraw()
                         or pctools.needs_redraw()
+                        or remaster.needs_redraw()
                         or lock.tick(self)
                     )
                     if draw:
@@ -1895,6 +1897,22 @@ class MainGUI():
             self.draw_hover_text(
                 "Ren'Py's gallery and replay rooms answer \"already seen\" for every scene and image.\n"
                 "One small script file, nothing written in your saves: Lock removes it.",
+                text=None,
+            )
+            menu_on = cheatsheet.menu_enabled(game)
+            if imgui.selectable(f"{icons.gamepad_variant_outline} {'Remove' if menu_on else 'Add'} in-game cheat menu (Shift+C)", False)[0]:
+                cheatsheet.toggle_menu(game)
+            self.draw_hover_text(
+                "A menu inside the game (Shift+C) with this game's money, points, stats and flags:\n"
+                "-10 / -1 / +1 / +10 / MAX buttons and switches. Rewritten by itself after each update.\n"
+                "One small script file, removed when you remove the menu. Save before changing anything.",
+                text=None,
+            )
+            if imgui.selectable(f"{icons.high_definition_box} HD & 60 fps...", False)[0]:
+                remaster.open_popup(game)
+            self.draw_hover_text(
+                "HD pictures (Real-ESRGAN, Ren'Py 8.4+ games made for less than 1080p) and smoother\n"
+                "animations (in-between frames computed: 30 -> 60 fps). The game's files stay as they are: Undo removes it all.",
                 text=None,
             )
             if extras._crash_file(game) is not None:
@@ -4532,6 +4550,21 @@ class MainGUI():
                 if changed:
                     p["upscale_path"] = value.strip().strip('"')
                     installdate.save_prefs()
+                # RIFE (HD & 60 fps: in-between frames of the animations)
+                rife_exe = remaster.tools()["rife"]
+                draw_settings_label(
+                    "RIFE:",
+                    "rife-ncnn-vulkan.exe (github.com/nihui/rife-ncnn-vulkan, Releases, ...-windows.zip, unzipped), used by\n"
+                    "HD & 60 fps for the animations. Empty = looked for in <F95Checker data>\\rife and in your Downloads folder.\n"
+                    "Without it ffmpeg's motion interpolation is used (slower, less clean on fast moves).\n"
+                    f"Now: {rife_exe or 'not found'}"
+                )
+                imgui.set_next_item_width(right_width)
+                changed, value = imgui.input_text("###lt_rife_path", p.get("rife_path", ""), 400)
+                if changed:
+                    p["rife_path"] = value.strip().strip('"')
+                    installdate.save_prefs()
+                    remaster.forget_tools()
                 draw_settings_label("Banner model:", "Photos / 3D renders suits most games; Drawings / anime for 2D art.\n"
                                                      "Changing it enlarges every banner again.")
                 models = list(visuals.MODELS)
