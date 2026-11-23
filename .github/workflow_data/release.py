@@ -29,7 +29,8 @@ if __name__ == "__main__":
     body += (
         "## ❤️ Credits\n" +
         "F95Checker Enhanced is a fork of [**F95Checker**](https://github.com/WillyJL/F95Checker), **Free and Open Source Software** " +
-        "(GPLv3) **developed by WillyJL**. Please consider [**donating to WillyJL**](https://linktr.ee/WillyJL). Bugs in the " +
+        "(GPLv3) **developed by WillyJL**. Please consider [**donating to WillyJL**](https://linktr.ee/WillyJL). The Enhanced " +
+        "features are made by Alex200295: you can support them on [**Ko-fi**](https://ko-fi.com/alex200295). Bugs in the " +
         "Enhanced features go to this fork's issues, not to WillyJL. The Windows zip ships Real-ESRGAN, RIFE, ffmpeg and " +
         "Depth Anything V2 Small in `tools/`: see `THIRD_PARTY_NOTICES.md`.\n\n" +
         "## 🚀 Changelog\n" +
