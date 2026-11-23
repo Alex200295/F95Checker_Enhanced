@@ -512,7 +512,9 @@ def write_menu(game: Game) -> str:
         return f"{game.name} is not a Ren'Py game (or its executable was not found)."
     sheet = scan_game_dir(path.parent)
     content = menu_script(sheet)
+    info = installdate.local_info().setdefault(game.id, {})
     if content is None:
+        info["cheatmenu_ts"] = info.get("files_ts", 0)      # not read again before the next update
         return f"No variable found in the scripts of {game.name}: nothing to put in the menu."
     try:
         if not (path.is_file() and path.read_text(encoding="utf-8") == content):
@@ -520,8 +522,8 @@ def write_menu(game: Game) -> str:
             path.with_suffix(".rpyc").unlink(missing_ok=True)
     except OSError as exc:
         return f"Could not write the cheat menu of {game.name}: {exc}"
-    info = installdate.local_info().setdefault(game.id, {})
     info["cheatmenu_ts"] = info.get("files_ts", 0)
+    info.pop("cheatmenu_off", None)
     installdate.save_local_info()
     count = re.search(r"scripts \((\d+)\)", content)
     return (f"In-game cheat menu added to {game.name} ({count.group(1) if count else '?'} variables).\n"
@@ -537,6 +539,8 @@ def remove_menu(game: Game) -> str:
         path.with_suffix(".rpyc").unlink(missing_ok=True)
     except OSError as exc:
         return f"Could not remove it: {exc}"
+    installdate.local_info().setdefault(game.id, {})["cheatmenu_off"] = True     # not added back by the scan
+    installdate.save_local_info()
     return f"In-game cheat menu removed from {game.name} (restart the game)."
 
 
@@ -555,10 +559,12 @@ def toggle_menu(game: Game):
 
 
 def refresh_menu_if_needed(game: Game) -> bool:
-    """Local scan (blocking): the game changed since the menu was written -> written again with its new variables."""
-    if not menu_enabled(game):
-        return False
+    """Local scan (blocking): the game changed since the menu was written -> written again with its new variables.
+    Library tools > Cheat menu in Ren'Py games: also added to the Ren'Py games without it, unless removed by hand."""
     info = installdate.local_info().get(game.id, {})
+    if not menu_enabled(game):
+        if not installdate.prefs().get("cheatmenu_default", True) or info.get("cheatmenu_off") or menu_path(game) is None:
+            return False
     if info.get("files_ts") and info.get("cheatmenu_ts") == info.get("files_ts"):
         return False
     write_menu(game)

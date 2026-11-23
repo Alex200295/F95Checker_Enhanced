@@ -4489,6 +4489,8 @@ class MainGUI():
                     ("watch_downloads", "Watch downloads:", "Proposes Import Update when an archive named like one of your games finishes downloading."),
                     ("cheats_default", "Cheats in Ren'Py games:", "Adds the developer console (Shift+O) to every Ren'Py game at each scan, new version folders too.\n"
                                                                  "Right click > Disable Cheats on a game keeps it off for that game."),
+                    ("cheatmenu_default", "Cheat menu in Ren'Py games:", "Adds the in-game cheat menu (Shift+C) to every Ren'Py game at each scan, new games and versions too.\n"
+                                                                       "Right click > Remove in-game cheat menu on a game keeps it off for that game."),
                     ("hero", "Continue banner:", "Wide banner above the grid with the game of this tab you played last: Play / Details."),
                     ("game_colors", "Game colours:", "Card frame in the main colour of its banner, blurred banner behind the image of the info popup."),
                     ("upscale", "Sharper banners:", "Banners narrower than 1600 px are enlarged once with Real-ESRGAN (graphics card, offline).\n"
@@ -4998,6 +5000,8 @@ class MainGUI():
                 ("Drives:", "balance", "Moves the games you have not played for the longest time from the fullest drives\n"
                                        "to the one with the most room (plan shown first).", pctools.open_balance_popup),
                 ("Engine:", "engine", "Identical Ren'Py engine files stored once per drive (hard links). Analyse first.", pctools.open_engine_popup),
+                ("HD & 60 fps:", "remaster", "Every Ren'Py game: HD pictures (8.4+ games under 1080p) and smoother animations (x2 fps),\n"
+                                             "one file at a time in the background. Undo per game (right click > HD & 60 fps...).", remaster.open_all_popup),
                 ("Settings:", "settings", "Slideshow, shelf, banners, colours, cheats, Ren'Py preferences, Lossless Scaling,\n"
                                           "Real-ESRGAN, discretion key, PIN lock...", self.open_library_settings),
             ):

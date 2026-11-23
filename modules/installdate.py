@@ -1270,6 +1270,7 @@ def prefs() -> dict:
             _prefs = {}
         _prefs.setdefault("jdownloader", False)
         _prefs.setdefault("cheats_default", True)
+        _prefs.setdefault("cheatmenu_default", True)
     return _prefs
 
 

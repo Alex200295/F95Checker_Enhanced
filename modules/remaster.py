@@ -63,6 +63,7 @@ IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 RIFE_EXE = "rife-ncnn-vulkan.exe"
 MIN_FPS = 50.0
 HD_MIN_VERSION = (8, 4)
+MIN_FREE_BYTES = 15 * 1024 ** 3        # stops writing on a drive with less free space than this
 
 
 def _log(msg: str):
@@ -164,7 +165,8 @@ def _size_in(text: str) -> tuple[int, int] | None:
 
 
 def virtual_size(game_dir: pathlib.Path) -> tuple[int, int] | None:
-    """Size the game is made for (gui.init(w, h) / config.screen_width), from gui / options scripts."""
+    """Size the game is made for (gui.init(w, h) / config.screen_width), from its gui / options scripts,
+    loose or in its .rpa archives, at the top of game/ or in a sub-folder (scripts/gui.rpyc), translations left out."""
     from modules import cheatsheet
     names = ("gui", "options")
 
@@ -176,25 +178,42 @@ def virtual_size(game_dir: pathlib.Path) -> tuple[int, int] | None:
                 return size
         return None
 
-    for name in names:
+    def wanted(rel: str) -> bool:
+        rel = rel.replace("\\", "/").lower()
+        stem, _, ext = rel.rpartition("/")[2].rpartition(".")
+        return stem in names and ext in ("rpy", "rpyc") and not rel.startswith("tl/") and "/tl/" not in rel
+
+    def read(rel: str, data_of):
+        # .rpy first (plain text), then .rpyc
+        for ext in ("rpy", "rpyc"):
+            data = data_of(rel + "." + ext)
+            if data is None:
+                continue
+            size = _size_in(data.decode("utf-8", "replace")) if ext == "rpy" else from_compiled(data)
+            if size:
+                return size
+        return None
+
+    loose = {}
+    for current, dirs, files in os.walk(game_dir):
+        dirs[:] = [d for d in dirs if d.lower() not in ("cache", "saves", "__pycache__", "tl", "toy_scripts")]
+        for name in files:
+            full = pathlib.Path(current) / name
+            rel = full.relative_to(game_dir).as_posix()
+            if wanted(rel):
+                loose[rel.lower()] = full
+    stems = sorted({k.rpartition(".")[0] for k in loose}, key=lambda k: (k.count("/"), k))
+    for stem in stems:
         with contextlib.suppress(OSError):
-            if (game_dir / f"{name}.rpy").is_file():
-                size = _size_in((game_dir / f"{name}.rpy").read_text(encoding="utf-8", errors="replace"))
-                if size:
-                    return size
-            if (game_dir / f"{name}.rpyc").is_file():
-                size = from_compiled((game_dir / f"{name}.rpyc").read_bytes())
-                if size:
-                    return size
+            size = read(stem, lambda rel: loose[rel.lower()].read_bytes() if rel.lower() in loose else None)
+            if size:
+                return size
     for archive in sorted(game_dir.glob("*.rpa")):
         index = toygen.rpa_index(archive)
-        for name in names:
-            for ext in (".rpy", ".rpyc"):
-                entry = index.get(name + ext)
-                if entry is None:
-                    continue
-                data = _read_entry(archive, entry)
-                size = _size_in(data.decode("utf-8", "replace")) if ext == ".rpy" else from_compiled(data)
+        lower = {k.lower(): k for k in index if wanted(k)}
+        for stem in sorted({k.rpartition(".")[0] for k in lower}, key=lambda k: (k.count("/"), k)):
+            with contextlib.suppress(OSError):
+                size = read(stem, lambda rel: _read_entry(archive, index[lower[rel.lower()]]) if rel.lower() in lower else None)
                 if size:
                     return size
     return None
@@ -451,6 +470,7 @@ class Job:
     failed: int = 0
     started: float = 0.0
     message: str = ""
+    drive_full: bool = False
 
 
 job = Job()
@@ -562,6 +582,17 @@ def make_60fps(media: Media, dst: pathlib.Path, t: dict) -> tuple[str, dict]:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _drive_full(root: pathlib.Path) -> bool:
+    try:
+        if shutil.disk_usage(root).free >= MIN_FREE_BYTES:
+            return False
+    except OSError:
+        return False
+    job.message = f"stopped: less than {MIN_FREE_BYTES // 1024 ** 3} GB free on {root.anchor or root}"
+    job.drive_full = True
+    return True
+
+
 def _process(game: Game, hd: bool, fps: bool):
     """Blocking, one file at a time. Writes the manifest after each file (cancel / crash = what is done stays)."""
     exe = installdate._main_exe(game)
@@ -590,7 +621,7 @@ def _process(game: Game, hd: bool, fps: bool):
             (game_dir / OVERSAMPLE_FILE).write_text(OVERSAMPLE_SCRIPT, encoding="utf-8")
             record(f"game/{OVERSAMPLE_FILE}")
         for media in todo:
-            if job.cancel:
+            if job.cancel or _drive_full(root):
                 return
             dst = game_dir / hd_name(media.key)
             error = make_hd(media, dst, t["esrgan"], model)
@@ -611,7 +642,7 @@ def _process(game: Game, hd: bool, fps: bool):
         job.done, job.total = 0, len(todo)
         job.phase = "60 fps animations" + ("" if t["rife"] else " (ffmpeg motion interpolation)")
         for media in todo:
-            if job.cancel:
+            if job.cancel or _drive_full(root):
                 return
             if media.entry is None:
                 # loose original: the new video is made beside it, the original is moved aside only once it is ready
@@ -651,13 +682,13 @@ def _process(game: Game, hd: bool, fps: bool):
 
 
 async def start(game: Game, hd: bool, fps: bool):
-    if job.running:
+    if job.running or batch.running:
         return
     job.__init__()
     job.running, job.game_id, job.game_name, job.started = True, game.id, game.name, time.time()
     try:
         await asyncio.get_running_loop().run_in_executor(None, _process, game, hd, fps)
-        verb = "Cancelled" if job.cancel else "Done"
+        verb = "Stopped, drive almost full" if job.drive_full else "Cancelled" if job.cancel else "Done"
         job.message = f"{verb}: {job.made} file(s) made, {job.skipped} left as they are, {job.failed} failed."
     except Exception as exc:
         job.message = f"Stopped: {exc}"
@@ -671,8 +702,167 @@ async def start(game: Game, hd: bool, fps: bool):
             toy._count_cache.pop(game.id, None)
 
 
+# ---------------------------------------------------------------------------
+# Every game (Library tools > HD & 60 fps)
+# ---------------------------------------------------------------------------
+
+@dataclasses.dataclass(slots=True)
+class Batch:
+    running: bool = False
+    cancel: bool = False
+    phase: str = ""
+    games: list = dataclasses.field(default_factory=list)        # [(game, files to look at)]
+    index: int = 0
+    files_total: int = 0
+    files_done: int = 0         # games finished before the current one
+    made: int = 0
+    skipped: int = 0
+    failed: int = 0
+    games_skipped: list = dataclasses.field(default_factory=list)  # "name: reason"
+    started: float = 0.0
+    message: str = ""
+
+
+batch = Batch()
+
+
+def _batch_plan(games: list, hd: bool, fps: bool) -> list:
+    """Blocking: Ren'Py games of the library with what is left to do in each (pictures only where HD can work)."""
+    plan = []
+    for game in games:
+        exe = installdate._main_exe(game)
+        if exe is None or not (exe.parent / "game").is_dir() or not (exe.parent / "renpy").is_dir():
+            continue
+        root, game_dir = exe.parent, exe.parent / "game"
+        count = 0
+        hd_here = False
+        if hd:
+            version, size = renpy_version(root), virtual_size(game_dir)
+            hd_here = bool(version) and version[:2] >= HD_MIN_VERSION and size is not None and size[1] < 1080
+            if hd_here:
+                count += sum(1 for m in list_images(game_dir) if not (game_dir / hd_name(m.key)).is_file())
+        if fps:
+            done = set(load_manifest(root).get("videos_done", []))
+            count += sum(1 for v in list_videos(game_dir) if v.key.lower() not in done)
+        if count:
+            plan.append((game, count, hd_here))
+    return plan
+
+
+async def start_all(games: list, hd: bool, fps: bool):
+    """One game after the other, one file at a time. Cancel stops after the current file; Start again resumes."""
+    if job.running or batch.running:
+        return
+    loop = asyncio.get_running_loop()
+    batch.__init__()
+    batch.running, batch.started = True, time.time()
+    try:
+        batch.phase = "Listing what is left to do in every Ren'Py game..."
+        plan = await loop.run_in_executor(None, _batch_plan, games, hd, fps)
+        batch.games = [(g, n) for g, n, _ in plan]
+        batch.files_total = sum(n for _, n, _ in plan)
+        for batch.index, (game, count, hd_here) in enumerate(plan):
+            if batch.cancel:
+                break
+            batch.phase = game.name
+            if game.launch_state is not LaunchState.Idle:
+                batch.games_skipped.append(f"{game.name}: running")
+                batch.files_done += count
+                continue
+            job.__init__()
+            job.running, job.game_id, job.game_name, job.started = True, game.id, game.name, time.time()
+            try:
+                await loop.run_in_executor(None, _process, game, hd and hd_here, fps)
+            except Exception as exc:
+                batch.games_skipped.append(f"{game.name}: {exc}")
+                _log(f"'{game.name}': {exc!r}")
+            finally:
+                job.running = False
+            batch.made += job.made
+            batch.skipped += job.skipped
+            batch.failed += job.failed
+            batch.files_done += count
+            if job.drive_full:
+                batch.games_skipped.append(f"{game.name}: {job.message}")
+            with contextlib.suppress(Exception):
+                from modules import toy
+                toy._count_cache.pop(game.id, None)
+        verb = "Cancelled" if batch.cancel else "Done"
+        batch.message = (f"{verb}: {batch.made} file(s) made, {batch.skipped} left as they are, {batch.failed} failed, "
+                         f"{len(batch.games)} game(s) looked at.")
+    except Exception as exc:
+        batch.message = f"Stopped: {exc}"
+        _log(f"All games: {exc!r}")
+    finally:
+        batch.running = False
+        batch.phase = ""
+        _log(f"All games: {batch.message}")
+
+
+def cancel_all():
+    batch.cancel = True
+    job.cancel = True
+
+
+def open_all_popup():
+    import imgui
+    state = {"hd": True, "fps": True}
+
+    def content():
+        t = tools()
+        imgui.text_disabled("Every Ren'Py game of the library, one after the other, one file at a time, in the background.\n"
+                            "The games' files stay as they are: each game's Undo (right click > HD & 60 fps...) removes what was added.\n"
+                            "Very long for a big library: close F95Checker or Cancel any time, Start again resumes where it stopped.")
+        imgui.separator()
+        if batch.running:
+            elapsed = time.time() - batch.started
+            done = batch.files_done + (job.done if job.running else 0)
+            eta = ""
+            if done and batch.files_total > done:
+                left = elapsed / done * (batch.files_total - done)
+                eta = f", about {int(left // 3600)} h {int(left % 3600 // 60)} min left"
+            if batch.games:
+                imgui.text(f"Game {batch.index + 1} / {len(batch.games)}: {batch.phase}")
+                if job.running:
+                    imgui.text(f"   {job.phase}: {job.done} / {job.total}")
+                imgui.text(f"All games: {done} / {batch.files_total} files{eta}")
+                imgui.text(f"{batch.made + job.made} made, {batch.skipped + job.skipped} kept, {batch.failed + job.failed} failed")
+            else:
+                imgui.text(batch.phase)
+            if imgui.button("Cancel###rma_cancel"):
+                cancel_all()
+            return
+        _, state["hd"] = imgui.checkbox("HD pictures (Ren'Py 8.4+ games made for less than 1080p only)###rma_hd", state["hd"])
+        if state["hd"] and not t["esrgan"]:
+            imgui.text_colored("   Real-ESRGAN not found: Library tools > Settings > Real-ESRGAN.", 0.95, 0.6, 0.2)
+        _, state["fps"] = imgui.checkbox("Smoother animations (x2 fps), videos below 50 fps###rma_fps", state["fps"])
+        if state["fps"]:
+            if not t["ffmpeg"]:
+                imgui.text_colored("   ffmpeg not found.", 0.95, 0.6, 0.2)
+            elif not t["rife"]:
+                imgui.text_colored("   RIFE not found: ffmpeg motion interpolation would take weeks for a whole library.\n"
+                                   "   Put rife-ncnn-vulkan in Downloads (or Library tools > Settings > RIFE) first.", 0.95, 0.6, 0.2)
+            else:
+                imgui.text_disabled("   RIFE found: in-between frames computed by the graphics card.")
+        imgui.text_disabled(f"Stops writing on a drive with less than {MIN_FREE_BYTES // 1024 ** 3} GB free (the other drives go on).")
+        if batch.message:
+            imgui.text_colored(batch.message, 0.4, 0.85, 0.4)
+            for line in batch.games_skipped[:8]:
+                imgui.text_disabled("   " + line)
+        can_hd = state["hd"] and t["esrgan"]
+        can_fps = state["fps"] and t["ffmpeg"]
+        if job.running:
+            imgui.text(f"Busy with {job.game_name}: wait for it (or cancel it in its window).")
+        elif (can_hd or can_fps) and imgui.button("Start all###rma_start"):
+            games = sorted(globals.games.values(), key=lambda g: g.name.lower())
+            async_thread.run(start_all(games, bool(can_hd), bool(can_fps)))
+
+    utils.push_popup(utils.popup, "HD & 60 fps - every game", content, buttons=True, closable=True, outside=False,
+                     popup_uuid="remaster_all")
+
+
 def needs_redraw() -> bool:
-    return job.running
+    return job.running or batch.running
 
 
 # ---------------------------------------------------------------------------
@@ -740,8 +930,8 @@ def open_popup(game: Game):
             imgui.text(f"{job.phase}: {job.done}/{job.total}{eta}  ({job.made} made, {job.skipped} kept, {job.failed} failed)")
             if imgui.button("Cancel###rm_cancel"):
                 job.cancel = True
-        elif job.running:
-            imgui.text(f"Busy with {job.game_name}: {job.phase} {job.done}/{job.total}")
+        elif job.running or batch.running:
+            imgui.text(f"Busy with {job.game_name or 'every game'}: {job.phase} {job.done}/{job.total}")
         else:
             if job.message and job.game_id == game.id:
                 imgui.text_colored(job.message, 0.4, 0.85, 0.4)
