@@ -36,6 +36,7 @@ import urllib.request
 
 from common.structs import (
     Game,
+    LaunchState,
     MsgBox,
     Os,
     Status,
@@ -64,7 +65,7 @@ LOG_PREFIX = "[LocalScan]"
 EXCLUDED_DIRS = {
     "saves", "save", "savedata", "cache", "logs", "log", "__pycache__", "screenshots", "crashes", "temp", "tmp",
     # added next to games by F95Checker / graphics mods, not by a game update
-    "reshade-shaders", "_f95checker_dlss5", "_disabled_mods",
+    "reshade-shaders", "_f95checker_dlss5", "_disabled_mods", "_f95checker_old_engine",
 }
 EXCLUDED_FILES = {
     "log.txt", "traceback.txt", "errors.txt", "persistent", "output_log.txt", "player.log", "player-prev.log",
@@ -728,6 +729,10 @@ async def _scan_game(game: Game, lib: Library, base: pathlib.Path | None, manual
         info.update(path=str(res.target), files_ts=files_ts, size=size)
     # Real engine + cheat mods found in the folder (Engine / Cheats columns)
     info["engine"], info["cheats"] = await loop.run_in_executor(None, detect_engine, res.executable)
+    # Old Ren'Py engine file left next to its newer version (update extracted over the old one): the game won't start
+    if getattr(game, "launch_state", LaunchState.Idle) is LaunchState.Idle:
+        for rel in await loop.run_in_executor(None, fix_engine_conflicts, res.executable):
+            report.exe_relocated.append(f"{game.name}: old engine file {rel} set aside ({OLD_ENGINE_DIR}), the game starts again")
     # Version-specific mods (walkthrough, cheats, gallery...) older than the files of this version: may break it
     old_mods = await loop.run_in_executor(None, outdated_mods, res.executable, files_ts)
     old_mods = [m for m in old_mods if m not in info.get("mods_old_ok", [])]
@@ -828,6 +833,7 @@ async def scan_library(*games: Game, manual=True, reserved=False):
         _log(f"Toy sync scripts: {error.traceback()}")
     try:
         from modules import pctools  # pctools imports this module
+        await loop.run_in_executor(None, pctools.dlss5_repair_all, games)
         for line in await loop.run_in_executor(None, pctools.auto_tidy, games):
             report.exe_relocated.append(f"tidied up: {line}")
     except Exception:
@@ -1783,6 +1789,37 @@ def toggle_cheats(game: Game):
         info["engine"], info["cheats"] = detect_engine(exe)
         save_local_info()
     utils.push_popup(msgbox.msgbox, "Cheats", message, MsgBox.info)
+
+
+OLD_ENGINE_DIR = "_f95checker_old_engine"
+
+
+def fix_engine_conflicts(exe: pathlib.Path) -> list[str]:
+    """Ren'Py refuses to start when renpy/ holds both X.rpy (older engine) and X_ren.py (newer engine), which
+    happens after extracting an update over an older version. The old X.rpy goes to <game>/_f95checker_old_engine/."""
+    root = exe.parent
+    engine = root / "renpy"
+    if not engine.is_dir():
+        return []
+    fixed = []
+    for current, dirs, files in os.walk(engine):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        names = {f.lower(): f for f in files}
+        for name in files:
+            if not name.lower().endswith("_ren.py"):
+                continue
+            old = names.get(name[:-7].lower() + ".rpy")
+            if old is None:
+                continue
+            src = pathlib.Path(current) / old
+            dst = root / OLD_ENGINE_DIR / src.relative_to(root)
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(src, dst)
+                fixed.append(src.relative_to(root).as_posix())
+            except OSError as exc:
+                _log(f"Engine conflict not fixed {src}: {exc}")
+    return fixed
 
 
 UNIVERSAL_MOD_RE = re.compile(r"urm|universal|0x52|unren|console", re.IGNORECASE)   # work with any version
