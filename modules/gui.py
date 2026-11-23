@@ -4504,9 +4504,11 @@ class MainGUI():
                     ("game_colors", "Game colours:", "Card frame in the main colour of its banner, blurred banner behind the image of the info popup."),
                     ("upscale", "Sharper banners:", "Banners narrower than 1600 px are enlarged once with Real-ESRGAN (graphics card, offline).\n"
                                                     "The originals are kept: untick to see them again."),
+                    ("dlss5_default", "DLSS 5 on by default:", "Unticked: the DLSS 5 kit is switched off at each launch (dxgi.dll.off),\n"
+                                                                "except in the games set to ReShade 'on at launch' (right click > Display profile)."),
                 ):
                     draw_settings_label(label, tip)
-                    changed, value = imgui.checkbox(f"###lt_{key}", bool(p.get(key, True)))
+                    changed, value = imgui.checkbox(f"###lt_{key}", bool(p.get(key, key != "dlss5_default")))
                     if changed:
                         p[key] = value
                         installdate.save_prefs()

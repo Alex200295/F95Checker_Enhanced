@@ -19,7 +19,8 @@ Display profile (per game)
     - Lossless Scaling: started with the game, the scaling hotkey (Ctrl+Alt+S by default) is sent once the
       game window has been in front for a few seconds, closed with the game if F95Checker started it.
     - ReShade: if ReShade is installed in the game, it is switched on or off before each launch
-      (its DLL is renamed to .dll.off when off).
+      (its DLL is renamed to .dll.off when off). Games with F95Checker's DLSS 5 kit: off by default,
+      on only where "on at launch" is chosen (or Library tools > Settings > DLSS 5 on by default).
 """
 import asyncio
 import concurrent.futures
@@ -72,6 +73,7 @@ def prefs() -> dict:
     p.setdefault("lossless_path", "")
     p.setdefault("lossless_hotkey", "ctrl+alt+s")
     p.setdefault("lossless_delay", 4.0)
+    p.setdefault("dlss5_default", False)     # DLSS 5 off unless chosen for a game (Library tools > Settings)
     return p
 
 
@@ -1697,10 +1699,35 @@ def _send_hotkey(combo: str):
         time.sleep(0.02)
 
 
-async def before_launch(game: Game):
+def reshade_wanted(game: Game) -> bool | None:
+    """ReShade state to set at launch: the game's choice, else for the DLSS 5 kit the default (off), else None (as it is)."""
     cfg = prefs()["display"].get(str(game.id))
-    if isinstance(cfg, dict) and cfg.get("reshade") is not None and reshade_dlls(game):
-        error_text = set_reshade(game, bool(cfg["reshade"]))
+    if isinstance(cfg, dict) and cfg.get("reshade") is not None:
+        return bool(cfg["reshade"])
+    if dlss5_state(game) == "installed":
+        return bool(prefs()["dlss5_default"])
+    return None
+
+
+def choose_reshade(game: Game, on: bool) -> str:
+    """On / off chosen for this game: kept at each launch (not overridden by the DLSS 5 default)."""
+    display_cfg(game)["reshade"] = bool(on)
+    installdate.save_prefs()
+    return set_reshade(game, on) if game.launch_state is LaunchState.Idle else ""
+
+
+def dlss5_install_default(game: Game) -> str:
+    """Installs the kit and leaves it as the default says (off unless DLSS 5 on by default, or on chosen for this game)."""
+    error_text = dlss5_install(game)
+    if not error_text and not reshade_wanted(game):
+        error_text = set_reshade(game, False)
+    return error_text
+
+
+async def before_launch(game: Game):
+    wanted = reshade_wanted(game)
+    if wanted is not None and reshade_dlls(game):
+        error_text = set_reshade(game, wanted)
         if error_text:
             _log(f"ReShade switch for {game.name}: {error_text}")
 
@@ -1775,7 +1802,7 @@ def draw_context_menu(game: Game):
             if exe is not None and imgui.selectable(f"Copy the exe name ({exe.name})###disp_ls_copy", False)[0]:
                 from modules import callbacks
                 callbacks.clipboard_copy(exe.name)
-            if dlss5_state(game) in ("installed", "other") and reshade_enabled(game) and cfg["reshade"] is not False:
+            if dlss5_state(game) in ("installed", "other") and reshade_enabled(game) and reshade_wanted(game) is not False:
                 imgui.text_colored("DLSS 5 is on in this game: the RTX 3060 will not keep up with both.\n"
                                    "Choose ReShade 'off at launch' below to play with frame generation.", 1.0, 0.65, 0.2)
         state = reshade_enabled(game)
@@ -1789,14 +1816,17 @@ def draw_context_menu(game: Game):
             if reshade_dlls(game) and dlss5_state(game) in ("installed", "other"):
                 imgui.text_disabled("(ReShade here runs DLSS 5: on/off below switches DLSS 5)")
             labels = ["leave as it is", "on at launch", "off at launch"]
+            if dlss5_state(game) == "installed":
+                labels[0] = f"default (DLSS 5 {'on' if prefs()['dlss5_default'] else 'off'})"
             index = {None: 0, True: 1, False: 2}[cfg["reshade"]]
             imgui.text(f"ReShade (now {'on' if state else 'off'}):")
             for i, label in enumerate(labels):
                 if imgui.radio_button(f"{label}###disp_rs{i}", index == i):
                     cfg["reshade"] = {0: None, 1: True, 2: False}[i]
                     installdate.save_prefs()
-                    if cfg["reshade"] is not None and game.launch_state is LaunchState.Idle:
-                        set_reshade(game, cfg["reshade"])
+                    wanted = reshade_wanted(game)
+                    if wanted is not None and game.launch_state is LaunchState.Idle:
+                        set_reshade(game, wanted)
         state = dlss5_state(game)
         if state == "installed":
             if imgui.selectable("Remove DLSS 5 from this game###disp_dlss5_rm", False)[0]:
@@ -1809,8 +1839,10 @@ def draw_context_menu(game: Game):
             folder = dlss5_folder(game)
             if folder is not None and dlss5_kit(folder) is not None:
                 if imgui.selectable("Install DLSS 5 (kit of this drive)###disp_dlss5_in", False)[0]:
-                    error_text = dlss5_install(game)
-                    utils.push_popup(msgbox.msgbox, "DLSS 5", error_text or "DLSS 5 installed: launch the game, Home key = ReShade.",
+                    error_text = dlss5_install_default(game)
+                    utils.push_popup(msgbox.msgbox, "DLSS 5", error_text or (
+                                     "DLSS 5 installed: launch the game, Home key = ReShade." if reshade_wanted(game) else
+                                     "DLSS 5 installed, off (default): Display profile > ReShade > on at launch to use it."),
                                      MsgBox.warn if error_text else MsgBox.info)
         elif state == "other":
             imgui.text_disabled("DLSS 5 / ReShade installed by another tool")

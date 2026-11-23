@@ -507,6 +507,8 @@ CRASH_FILES = ("traceback.txt", "errors.txt")
 _MISSING_RE = _re.compile(r"Image '([^']+)' not found|Couldn't find file '([^']+)'|"
                           r"Could not find (?:the )?(?:file|movie|image)[: ]+'?([^'\n]+?)'?(?:\.|$)", _re.I | _re.M)
 _TWICE_RE = _re.compile(r"(\S+) is defined twice", _re.I)
+# translation / dialogue id: "Line with id ch4_scene0_9215934d appeared twice, at game/ch4.rpy:63 and game/ep1_part1.rpy:56."
+_ID_TWICE_RE = _re.compile(r"Line with id (\S+) appeared twice, at (\S+?):\d+ and (\S+?):\d+", _re.I)
 _FILE_RE = _re.compile(r'File "([^"]+)", line (\d+)')
 _GL_RE = _re.compile(r"OpenGL|glGetString|\bGL_\w+|angle|Could not set video mode|shader|GLES|renderer", _re.I)
 _SAVE_RE = _re.compile(r"loadsave\.py|in load\b|UnpicklingError|while loading", _re.I)
@@ -583,10 +585,13 @@ def diagnose(game: Game) -> Diagnosis | None:
         d.actions.append((f"Disable {rel}", lambda: _disable(game, rel)))
         return d
     # 3. defined twice: an old script left next to the new one
-    twice = _TWICE_RE.search(text)
+    twice = _TWICE_RE.search(text) or _ID_TWICE_RE.search(text)
     if twice:
         d.kind = "twice"
-        others = sorted({f.replace("\\", "/") for f, _ in _FILE_RE.findall(text) if f.replace("\\", "/").startswith("game/")})
+        if twice.re is _ID_TWICE_RE:
+            others = sorted({f.replace("\\", "/") for f in twice.groups()[1:] if f.replace("\\", "/").startswith("game/")})
+        else:
+            others = sorted({f.replace("\\", "/") for f, _ in _FILE_RE.findall(text) if f.replace("\\", "/").startswith("game/")})
         older = _oldest(exe, others) if exe is not None and len(others) >= 2 else ""
         d.explain = (f"\"{twice.group(1)}\" is defined twice" + (f" (in {', '.join(others)})" if others else "") + ":\n"
                      "usually a script of the previous version (or of a mod) left in the folder.")
@@ -668,11 +673,17 @@ def _disable(game: Game, rel: str) -> str:
 
 
 def _oldest(exe: pathlib.Path, rels: list[str]) -> str:
+    """The file clearly older than the others: its .rpy or the .rpyc compiled from it, whichever is the most recent
+    (a release compiles every .rpyc at once: a script of the previous version keeps its older .rpyc)."""
     dated = []
     for rel in rels:
         path = exe.parent / rel
-        with contextlib.suppress(OSError):
-            dated.append((path.stat().st_mtime, rel))
+        times = []
+        for candidate in (path, path.with_suffix(".rpyc") if path.suffix.lower() == ".rpy" else path):
+            with contextlib.suppress(OSError):
+                times.append(candidate.stat().st_mtime)
+        if times:
+            dated.append((max(times), rel))
     if len(dated) < 2:
         return ""
     dated.sort()
@@ -893,10 +904,10 @@ def draw_status_tab(gui, game: Game):
         if s["dlss"] == "installed":
             act("Remove", lambda: pctools.dlss5_remove(game) or "DLSS 5 removed.", "dlssrm")
         elif s["dlss"] == "":
-            act("Install", lambda: pctools.dlss5_install(game) or "DLSS 5 installed.", "dlssin")
+            act("Install", lambda: pctools.dlss5_install_default(game) or "DLSS 5 installed.", "dlssin")
     if s["reshade"] is not None:
         row("ReShade", "on" if s["reshade"] else "off (dxgi.dll.off)", good if s["reshade"] else None)
-        act("Turn off" if s["reshade"] else "Turn on", lambda: pctools.set_reshade(game, not s["reshade"]) or "Done.", "rs")
+        act("Turn off" if s["reshade"] else "Turn on", lambda: pctools.choose_reshade(game, not s["reshade"]) or "Done.", "rs")
     row("Lossless Scaling", {"off": "off", "scale": "scaling", "framegen": "frame generation"}.get(s["ls"], s["ls"]))
     # Ren'Py
     if s["renpy"]:
