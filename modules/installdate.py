@@ -73,7 +73,7 @@ EXCLUDED_FILES = {
     # F95Checker's own files in games (cheats console, toy sync, DLSS 5 kit) and ReShade / DLSS 5 mods:
     # adding them must not make the game look freshly updated
     "zz_f95checker_console.rpy", "zz_f95checker_console.rpyc", "zz_f95toy.rpy", "zz_f95toy.rpyc",
-    "zz_f95checker_prefs.rpy", "zz_f95checker_prefs.rpyc",
+    "zz_f95checker_prefs.rpy", "zz_f95checker_prefs.rpyc", "zz_f95checker_unlock.rpy", "zz_f95checker_unlock.rpyc",
     "dlss5_settings.rpy", "dlss5_settings.rpyc", "_f95dlss5.json",
     "dxgi.dll", "dxgi.dll.off", "reshade.ini", "reshadepreset.ini", "nvngx_dlss.dll", "nvngx_dlssnr.dll",
     "nvngx_dlss.dll.ver", "nvngx_dlssnr.dll.ver", "setup dlss5.bat", "uninstall dlss5.bat", "reshade_setup.exe",
@@ -1621,6 +1621,7 @@ RENPY_PREFS_DEFAULT = {
     "sound": None,
     "voice": None,
     "fullscreen": None,         # True / False; None = leave the game's
+    "free_rollback": True,      # rollback and skipping always allowed, even where the game turns them off
 }
 PREFS_TEMPLATE = """# Added by F95Checker (Library tools > Ren'Py preferences). Delete this file to remove it.
 # Sets your usual preferences once per F95Checker settings version, and only those still at the game's
@@ -1675,6 +1676,28 @@ init 999 python:
 """
 
 
+FREE_ROLLBACK_SCRIPT = """
+# Rollback (mouse wheel up / Page Up) and skipping (Ctrl / Tab) always allowed, also where the game turns
+# them off (Library tools > Ren'Py preferences > Always allow rollback and skipping). Saves are not affected.
+init 999 python:
+    def _f95_free_rollback():
+        try:
+            import store
+            config.rollback_enabled = True
+            config.allow_skipping = True
+            if (config.hard_rollback_limit or 0) < 250:
+                config.hard_rollback_limit = 250
+            if (config.rollback_length or 0) < 250:
+                config.rollback_length = 250
+            store._rollback = True
+            store._skipping = True
+        except Exception:
+            pass
+    _f95_free_rollback()
+    config.periodic_callbacks.append(_f95_free_rollback)
+"""
+
+
 def renpy_prefs() -> dict:
     p = prefs()
     current = p.get("renpy_prefs")
@@ -1701,10 +1724,13 @@ def renpy_prefs_script() -> str | None:
             values[mixer] = round(max(0, min(100, int(rp[key]))) / 100.0, 2)
     if rp["fullscreen"] is not None:
         values["fullscreen"] = bool(rp["fullscreen"])
-    if not values:
-        return None
-    token = "v1:" + json.dumps(values, sort_keys=True)
-    return PREFS_TEMPLATE.format(token=token, values=dict(sorted(values.items())))
+    parts = []
+    if values:
+        token = "v1:" + json.dumps(values, sort_keys=True)
+        parts.append(PREFS_TEMPLATE.format(token=token, values=dict(sorted(values.items()))))
+    if rp.get("free_rollback"):
+        parts.append(FREE_ROLLBACK_SCRIPT.lstrip("\n") if not parts else FREE_ROLLBACK_SCRIPT)
+    return "".join(parts) or None
 
 
 def ensure_renpy_prefs(game: Game, content: str | None = "") -> bool:
@@ -1792,6 +1818,46 @@ def toggle_cheats(game: Game):
         info["engine"], info["cheats"] = detect_engine(exe)
         save_local_info()
     utils.push_popup(msgbox.msgbox, "Cheats", message, MsgBox.info)
+
+
+UNLOCK_FILE = "zz_f95checker_unlock.rpy"
+UNLOCK_SCRIPT = (
+    "# Added by F95Checker (right click > Unlock gallery & replays). Delete this file to undo it:\n"
+    "# nothing is written in your saves, the game is only told every scene and image was already seen.\n"
+    "init 999 python:\n"
+    "    renpy.seen_label = lambda label: True\n"
+    "    renpy.seen_image = lambda name: True\n"
+    "    renpy.seen_audio = lambda filename: True\n"
+)
+
+
+def unlock_enabled(game: Game) -> bool:
+    path = _console_path(game)
+    return path is not None and path.with_name(UNLOCK_FILE).is_file()
+
+
+def toggle_unlock(game: Game):
+    """Ren'Py: gallery / replay rooms of the game unlocked (scenes and images answered as already seen).
+    Reversible: a separate script file, nothing written in the saves or persistent data."""
+    path = _console_path(game)
+    if path is None:
+        utils.push_popup(msgbox.msgbox, "Gallery", f"{game.name} is not a Ren'Py game (or its executable was not found).", MsgBox.warn)
+        return
+    path = path.with_name(UNLOCK_FILE)
+    try:
+        if path.is_file():
+            path.unlink()
+            path.with_suffix(".rpyc").unlink(missing_ok=True)
+            message = f"Gallery and replays of {game.name} back to normal (restart the game)."
+        else:
+            path.write_text(UNLOCK_SCRIPT, encoding="utf-8")
+            message = (f"Gallery and replays of {game.name} unlocked. Restart the game.\n"
+                       "Works with Ren'Py's own gallery / replay system (most games). Galleries that use their own\n"
+                       "unlock flags stay as they are. Right click > Lock gallery & replays to undo.")
+        _log(f"'{game.name}': {message.splitlines()[0]}")
+    except OSError as exc:
+        message = f"Could not change the gallery of {game.name}:\n{exc}"
+    utils.push_popup(msgbox.msgbox, "Gallery", message, MsgBox.info)
 
 
 OLD_ENGINE_DIR = "_f95checker_old_engine"

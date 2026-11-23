@@ -437,6 +437,11 @@ def _track_launch(game: Game, process):
             game.launch_flushed = 0.0
             game.launch_process = None
             launch_state_changed = True
+            try:
+                from modules import extras  # Ren'Py error during the session: explained, with a fix when known
+                extras.after_game_exit(game, session_start)
+            except Exception:
+                pass
 
     async_thread.run(watch())
 

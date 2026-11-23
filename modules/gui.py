@@ -1889,6 +1889,19 @@ class MainGUI():
                 "with a Copy button: paste the line in the console (Shift+O, Ctrl+V, Enter).",
                 text=None,
             )
+            unlocked = installdate.unlock_enabled(game)
+            if imgui.selectable(f"{icons.lock_open_variant_outline} {'Lock' if unlocked else 'Unlock'} gallery & replays", False)[0]:
+                installdate.toggle_unlock(game)
+            self.draw_hover_text(
+                "Ren'Py's gallery and replay rooms answer \"already seen\" for every scene and image.\n"
+                "One small script file, nothing written in your saves: Lock removes it.",
+                text=None,
+            )
+            if extras._crash_file(game) is not None:
+                if imgui.selectable(f"{icons.alert_circle_outline} What went wrong?", False)[0]:
+                    extras.open_diagnosis_popup(game)
+                self.draw_hover_text("Reads the last Ren'Py error of this game (traceback.txt / errors.txt):\n"
+                                     "what it means, the file at fault, and a fix when there is a known one.", text=None)
         toy.draw_context_menu(game)
         pctools.draw_context_menu(game)
         if game and imgui.selectable(f"{icons.puzzle_outline} Mods & Extras", False)[0]:
@@ -4546,6 +4559,11 @@ class MainGUI():
                 if rp["on"]:
                     c, rp["skip_unseen"] = imgui.checkbox("Skip also unread text###lt_rp_skip", rp["skip_unseen"])
                     rp_changed |= c
+                    c, rp["free_rollback"] = imgui.checkbox("Always allow rollback and skipping###lt_rp_rollback", rp["free_rollback"])
+                    rp_changed |= c
+                    if imgui.is_item_hovered():
+                        imgui.set_tooltip("Mouse wheel up / Page Up goes back, Ctrl / Tab skips, also in games (or scenes)\n"
+                                          "that turn them off, and up to 250 steps back. Minigames may be skippable too.")
                     for key, label, lo, hi in (("afm_time", "Auto-forward (1 fast .. 40 slow)", 1, 40), ("music", "Music volume %", 0, 100),
                                                ("sound", "Sound volume %", 0, 100), ("voice", "Voice volume %", 0, 100)):
                         keep = rp[key] is None

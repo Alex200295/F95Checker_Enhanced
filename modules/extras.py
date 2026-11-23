@@ -483,3 +483,245 @@ def open_cleanup_popup():
             imgui.end_table()
 
     utils.push_popup(utils.popup, "Clean up", content, buttons=True, closable=True, outside=False, popup_uuid="extras_clean")
+
+
+# ---------------------------------------------------------------------------
+# What went wrong? (Ren'Py games: right click, and automatically after a game shows an error)
+# ---------------------------------------------------------------------------
+#   Ren'Py writes traceback.txt (error while playing) or errors.txt (script errors at start) next to the exe.
+#   They are read when the game closes after a session started from F95Checker, and from the right click
+#   menu at any time: the error in plain words, the file at fault, and a one-click fix when there is a known one.
+
+import re as _re
+
+CRASH_FILES = ("traceback.txt", "errors.txt")
+_MISSING_RE = _re.compile(r"Image '([^']+)' not found|Couldn't find file '([^']+)'|"
+                          r"Could not find (?:the )?(?:file|movie|image)[: ]+'?([^'\n]+?)'?(?:\.|$)", _re.I | _re.M)
+_TWICE_RE = _re.compile(r"(\S+) is defined twice", _re.I)
+_FILE_RE = _re.compile(r'File "([^"]+)", line (\d+)')
+_GL_RE = _re.compile(r"OpenGL|glGetString|\bGL_\w+|angle|Could not set video mode|shader|GLES|renderer", _re.I)
+_SAVE_RE = _re.compile(r"loadsave\.py|in load\b|UnpicklingError|while loading", _re.I)
+
+
+@dataclasses.dataclass(slots=True)
+class Diagnosis:
+    path: pathlib.Path              # traceback.txt / errors.txt
+    when: float
+    error: str                      # the error line
+    culprit: str = ""               # last game file of the trace ("game/x.rpy")
+    line: int = 0
+    kind: str = "other"             # missing / engine / twice / mod / save / graphics / memory / other
+    explain: str = ""
+    actions: list = dataclasses.field(default_factory=list)   # (label, callable returning a result text)
+
+
+def _crash_file(game: Game) -> pathlib.Path | None:
+    exe = installdate._main_exe(game)
+    if exe is None:
+        return None
+    found = [exe.parent / name for name in CRASH_FILES if (exe.parent / name).is_file()]
+    return max(found, key=lambda p: p.stat().st_mtime) if found else None
+
+
+def _error_line(top: str) -> str:
+    lines = [l.rstrip() for l in top.splitlines() if l.strip()]
+    for line in reversed(lines):
+        if not line.startswith((" ", "\t")) and not line.startswith(("While ", "I'm sorry", "File ", "Ren'Py", "--")):
+            return line.strip()
+    return lines[-1].strip() if lines else ""
+
+
+def diagnose(game: Game) -> Diagnosis | None:
+    path = _crash_file(game)
+    if path is None:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    top = text.split("-- Full Traceback", 1)[0]
+    error = _error_line(top) if path.name == "traceback.txt" else \
+        next((l.strip() for l in top.splitlines() if l.strip().startswith("File ")), _error_line(top))
+    files = [(f, int(n)) for f, n in _FILE_RE.findall(top) if not f.replace("\\", "/").startswith(("renpy/", "lib/"))]
+    d = Diagnosis(path, path.stat().st_mtime, error)
+    if files:
+        d.culprit, d.line = files[-1][0].replace("\\", "/"), files[-1][1]
+    exe = installdate._main_exe(game)
+    rel = d.culprit[5:] if d.culprit.startswith("game/") else ""
+
+    # 1. Ren'Py engine files of two versions side by side (update extracted over an older one)
+    conflicts = []
+    if exe is not None and ("_ren.py" in text or _re.search(r"renpy/\S+\.rpy", text)):
+        conflicts = [1] if _engine_conflicts(exe) else []
+    if conflicts:
+        d.kind = "engine"
+        d.explain = ("The game folder holds Ren'Py engine files of two versions (an update extracted over the older one).\n"
+                     "Fix: the old engine files are moved to _f95checker_old_engine (not deleted).")
+        d.actions.append(("Fix the engine files", lambda: _fix_engine(game)))
+        return d
+    # 2. a mod: the file at fault was installed by F95Checker, or looks like a mod
+    mod = _installed_mod_with(game, d.culprit) if d.culprit else None
+    if mod is not None:
+        d.kind = "mod"
+        d.explain = (f"The error is in {d.culprit}, a file of the mod \"{mod.get('name')}\" you installed with F95Checker:\n"
+                     "it does not fit this version of the game. Uninstall it (the game files it replaced come back).")
+        d.actions.append((f"Uninstall {mod.get('name')}", lambda: _uninstall_mod(game, mod.get("id"))))
+        return d
+    if rel and installdate.MOD_RE.search(rel.rsplit("/", 1)[-1]):
+        d.kind = "mod"
+        d.explain = (f"The error is in {d.culprit}, which looks like a mod (walkthrough / cheat / gallery...):\n"
+                     "probably made for another version. Disable it: moved to _disabled_mods (move it back to undo).")
+        d.actions.append((f"Disable {rel}", lambda: _disable(game, rel)))
+        return d
+    # 3. defined twice: an old script left next to the new one
+    twice = _TWICE_RE.search(text)
+    if twice:
+        d.kind = "twice"
+        others = sorted({f.replace("\\", "/") for f, _ in _FILE_RE.findall(text) if f.replace("\\", "/").startswith("game/")})
+        older = _oldest(exe, others) if exe is not None and len(others) >= 2 else ""
+        d.explain = (f"\"{twice.group(1)}\" is defined twice" + (f" (in {', '.join(others)})" if others else "") + ":\n"
+                     "usually a script of the previous version (or of a mod) left in the folder.")
+        if older:
+            d.explain += f"\nThe older file is {older}: set it aside (moved to _disabled_mods, move it back to undo)."
+            d.actions.append((f"Set aside {older[5:]}", lambda: _disable(game, older[5:])))
+        return d
+    # 4. missing files
+    missing = [next(g for g in m.groups() if g) for m in _MISSING_RE.finditer(top)]
+    if missing:
+        d.kind = "missing"
+        d.explain = (f"A file of the game is missing: {missing[0]}.\n"
+                     "The game folder is incomplete (archive badly extracted, or an update applied over a partial copy).\n"
+                     "Download the game again (or its latest version) and install it with Import Update.")
+        d.actions.append(("Open the game thread", lambda: _open(game.url)))
+        return d
+    # 5. saves of another version
+    if _SAVE_RE.search(top):
+        d.kind = "save"
+        d.explain = ("The error happened while loading a save: saves made with another version (or with a mod) often\n"
+                     "can't be loaded. Start a new game, or load an older save made with this version.")
+        return d
+    # 6. graphics
+    if _GL_RE.search(text):
+        d.kind = "graphics"
+        d.explain = "A graphics / renderer error. In the game, Shift+G opens the renderer choice: try another one."
+        try:
+            from modules import pctools
+            if pctools.dlss5_state(game) == "installed":
+                d.explain += "\nDLSS 5 is installed for this game: remove it first."
+                d.actions.append(("Remove DLSS 5 for this game", lambda: pctools.dlss5_remove(game) or "DLSS 5 removed."))
+        except Exception:
+            pass
+        return d
+    if "MemoryError" in text or "out of memory" in text.lower():
+        d.kind = "memory"
+        d.explain = "Not enough memory. Close other programs (browser, other games) and start the game again."
+        return d
+    d.explain = (f"Error in {d.culprit}, line {d.line}." if d.culprit else "Error inside the Ren'Py engine.") + \
+        "\nNo known fix: the full text is in the file below (the game's thread often has the answer)."
+    return d
+
+
+def _engine_conflicts(exe: pathlib.Path) -> bool:
+    engine = exe.parent / "renpy"
+    if not engine.is_dir():
+        return False
+    for current, dirs, files in os.walk(engine):
+        names = {f.lower() for f in files}
+        if any(f.endswith("_ren.py") and f[:-7] + ".rpy" in names for f in names):
+            return True
+    return False
+
+
+def _fix_engine(game: Game) -> str:
+    exe = installdate._main_exe(game)
+    fixed = installdate.fix_engine_conflicts(exe) if exe is not None else []
+    return f"{len(fixed)} old engine file(s) set aside: start the game again." if fixed else "Nothing to fix any more."
+
+
+def _installed_mod_with(game: Game, culprit: str) -> dict | None:
+    from modules import importupdate
+    for mod in reversed(importupdate.installed_mods(game)):
+        files = {f.lower() for f in mod.get("files", [])}
+        if culprit.lower() in files or (culprit.lower().endswith(".rpyc") and culprit.lower()[:-1] in files):
+            return mod
+    return None
+
+
+def _uninstall_mod(game: Game, mod_id: int) -> str:
+    from modules import importupdate
+    err = importupdate.uninstall_mod(game, mod_id)
+    return f"Not uninstalled: {err}" if err else "Mod uninstalled: start the game again."
+
+
+def _disable(game: Game, rel: str) -> str:
+    err = installdate.disable_mod(game, rel)
+    return f"Not moved: {err}" if err else f"{rel} moved to {installdate.DISABLED_MODS_DIR}: start the game again."
+
+
+def _oldest(exe: pathlib.Path, rels: list[str]) -> str:
+    dated = []
+    for rel in rels:
+        path = exe.parent / rel
+        with contextlib.suppress(OSError):
+            dated.append((path.stat().st_mtime, rel))
+    if len(dated) < 2:
+        return ""
+    dated.sort()
+    return dated[0][1] if dated[1][0] - dated[0][0] > 86400 else ""      # clearly older (a day or more)
+
+
+def _open(url: str) -> str:
+    from modules import callbacks
+    callbacks.open_webpage(url)
+    return ""
+
+
+def open_diagnosis_popup(game: Game, d: Diagnosis | None = None):
+    import imgui
+    d = d or diagnose(game)
+    if d is None:
+        utils.push_popup(msgbox.msgbox, "What went wrong?", f"No error file of {game.name} found (traceback.txt / errors.txt).", MsgBox.info)
+        return
+    state = {"result": ""}
+
+    def content():
+        imgui.text(game.name)
+        imgui.text_disabled(f"{d.path.name}, {time.strftime('%Y-%m-%d %H:%M', time.localtime(d.when))}")
+        imgui.separator()
+        imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + (globals.gui.scaled(700) if globals.gui else 700))
+        imgui.text_colored(d.error or "(no error line)", 0.95, 0.45, 0.35)
+        if d.culprit:
+            imgui.text_disabled(f"In {d.culprit}, line {d.line}")
+        imgui.spacing()
+        imgui.text(d.explain)
+        imgui.pop_text_wrap_pos()
+        imgui.spacing()
+        for i, (label, action) in enumerate(d.actions):
+            if imgui.button(f"{label}###diag_act_{i}"):
+                try:
+                    state["result"] = action() or ""
+                except Exception as exc:
+                    state["result"] = f"Failed: {exc}"
+            imgui.same_line()
+        if imgui.button(f"Open {d.path.name}###diag_open"):
+            from modules import callbacks
+            async_thread.run(callbacks.default_open(str(d.path)))
+        if state["result"]:
+            imgui.text_colored(state["result"], 0.4, 0.85, 0.4)
+
+    utils.push_popup(utils.popup, "What went wrong?", content, buttons=True, closable=True, outside=False,
+                     popup_uuid=f"diagnosis_{game.id}")
+
+
+def after_game_exit(game: Game, started: float):
+    """Called when a game started from F95Checker closes: an error file written during the session -> popup."""
+    try:
+        path = _crash_file(game)
+        if path is None or path.stat().st_mtime < started - 2:
+            return
+        d = diagnose(game)
+        if d is not None:
+            _log(f"'{game.name}': {d.path.name} written during the session ({d.kind}): {d.error}")
+            open_diagnosis_popup(game, d)
+    except Exception as exc:
+        _log(f"Crash check of {game.name}: {exc!r}")
