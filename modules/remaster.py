@@ -486,6 +486,7 @@ class Job:
     started: float = 0.0
     message: str = ""
     drive_full: bool = False
+    last_error: str = ""
 
 
 job = Job()
@@ -570,7 +571,10 @@ def make_60fps(media: Media, dst: pathlib.Path, t: dict) -> tuple[str, dict]:
         if t["rife"]:
             (work / "in").mkdir()
             (work / "mid").mkdir()
-            error = _run([t["ffmpeg"], "-v", "error", "-i", src, "-vsync", "0", work / "in" / "%08d.png"], 1800)
+            # every frame as it is: -fps_mode (ffmpeg 5.1+; -vsync was removed in recent versions), -vsync for old ones
+            error = _run([t["ffmpeg"], "-v", "error", "-i", src, "-fps_mode", "passthrough", work / "in" / "%08d.png"], 1800)
+            if error and ("fps_mode" in error or "Option not found" in error or "Unrecognized option" in error):
+                error = _run([t["ffmpeg"], "-v", "error", "-y", "-i", src, "-vsync", "0", work / "in" / "%08d.png"], 1800)
             if not error:
                 error = _run([t["rife"], "-i", work / "in", "-o", work / "mid"], 3600)
             if not error:
@@ -644,6 +648,7 @@ def _process(game: Game, hd: bool, fps: bool):
                 job.skipped += 1
             elif error:
                 job.failed += 1
+                job.last_error = f"{media.key}: {error}"
                 _log(f"'{game.name}': {media.key}: {error}")
             else:
                 job.made += 1
@@ -688,7 +693,10 @@ def _process(game: Game, hd: bool, fps: bool):
                 job.skipped += 1
             elif error:
                 job.failed += 1
+                job.last_error = f"{media.key}: {error}"
                 _log(f"'{game.name}': {media.key}: {error}")
+                job.done += 1
+                continue                    # not marked as done: tried again at the next Start
             else:
                 job.made += 1
             data.setdefault("videos_done", []).append(media.key.lower())
@@ -801,6 +809,8 @@ async def start_all(games: list, hd: bool, fps: bool):
             batch.files_done += count
             if job.drive_full:
                 batch.games_skipped.append(f"{game.name}: {job.message}")
+            if job.failed and job.last_error:
+                batch.games_skipped.append(f"{game.name}: {job.failed} failed (last: {job.last_error[:150]})")
             with contextlib.suppress(Exception):
                 from modules import toy
                 toy._count_cache.pop(game.id, None)
@@ -952,6 +962,9 @@ def open_popup(game: Game):
         else:
             if job.message and job.game_id == game.id:
                 imgui.text_colored(job.message, 0.4, 0.85, 0.4)
+                if job.failed and job.last_error:
+                    imgui.text_colored(f"Last error: {job.last_error[:300]}", 0.95, 0.5, 0.4)
+                    imgui.text_disabled("The failed files are tried again at the next Start.")
             can_hd = state["hd"] and t["esrgan"]
             if (can_hd or state["fps"]) and imgui.button("Start###rm_start"):
                 if game.launch_state is not LaunchState.Idle:
