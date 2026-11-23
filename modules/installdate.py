@@ -66,7 +66,7 @@ EXCLUDED_DIRS = {
     "saves", "save", "savedata", "cache", "logs", "log", "__pycache__", "screenshots", "crashes", "temp", "tmp",
     # added next to games by F95Checker / graphics mods, not by a game update
     "reshade-shaders", "_f95checker_dlss5", "_disabled_mods", "_f95checker_old_engine", "_f95checker_mod_backup",
-    "_f95checker_original",
+    "_f95checker_original", "_f95depth",
 }
 EXCLUDED_FILES = {
     "log.txt", "traceback.txt", "errors.txt", "persistent", "output_log.txt", "player.log", "player-prev.log",
@@ -76,6 +76,7 @@ EXCLUDED_FILES = {
     "zz_f95checker_console.rpy", "zz_f95checker_console.rpyc", "zz_f95toy.rpy", "zz_f95toy.rpyc",
     "zz_f95checker_prefs.rpy", "zz_f95checker_prefs.rpyc", "zz_f95checker_unlock.rpy", "zz_f95checker_unlock.rpyc",
     "zz_f95checker_cheatmenu.rpy", "zz_f95checker_cheatmenu.rpyc", "zz_f95checker_oversample.rpy", "zz_f95checker_oversample.rpyc",
+    "zz_f95checker_depth.rpy", "zz_f95checker_depth.rpyc",
     "_f95checker_remaster.json",
     "dlss5_settings.rpy", "dlss5_settings.rpyc", "_f95dlss5.json",
     "dxgi.dll", "dxgi.dll.off", "reshade.ini", "reshadepreset.ini", "nvngx_dlss.dll", "nvngx_dlssnr.dll",

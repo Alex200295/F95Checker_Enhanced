@@ -66,6 +66,7 @@ from modules import (
     cheatsheet,
     colors,
     db,
+    depth,
     discover,
     extras,
     lock,
@@ -1024,6 +1025,7 @@ class MainGUI():
                         or visuals.needs_redraw()
                         or pctools.needs_redraw()
                         or remaster.needs_redraw()
+                        or depth.needs_redraw()
                         or lock.tick(self)
                     )
                     if draw:
@@ -1913,6 +1915,13 @@ class MainGUI():
             self.draw_hover_text(
                 "HD pictures (Real-ESRGAN, Ren'Py 8.4+ games made for less than 1080p) and smoother\n"
                 "animations (in-between frames computed: 30 -> 60 fps). The game's files stay as they are: Undo removes it all.",
+                text=None,
+            )
+            if imgui.selectable(f"{icons.rotate_3d_variant} 3D & living pictures...", False)[0]:
+                depth.open_popup(game)
+            self.draw_hover_text(
+                "Depth map of every picture (graphics card, once). In the game, Shift+P: living pictures\n"
+                "(near things move slightly) or 3D side by side for the Quest 3 (Virtual Desktop, Half SBS). Ren'Py 8.1+.",
                 text=None,
             )
             if extras._crash_file(game) is not None:
@@ -4567,6 +4576,49 @@ class MainGUI():
                     p["rife_path"] = value.strip().strip('"')
                     installdate.save_prefs()
                     remaster.forget_tools()
+                # HD for (screen height): 1440p / 2160p when playing on the Quest 3 through Virtual Desktop
+                draw_settings_label("HD for:", "Height of the screen you play on. HD pictures are made for the Ren'Py 8.4+ games made for less.\n"
+                                               "1080p: your monitor. 1440p / 2160p: Quest 3 through Virtual Desktop with Windows at that resolution\n"
+                                               "(then the 1080p games get HD pictures too: about 3 to 4 times the space of their pictures).")
+                imgui.set_next_item_width(right_width)
+                targets = list(remaster.HD_TARGETS)
+                current = targets.index(remaster.hd_target())
+                changed, index = imgui.combo("###lt_hd_target", current, [f"{t}p" for t in targets])
+                if changed:
+                    p["hd_target"] = targets[index]
+                    installdate.save_prefs()
+                # Depth model (3D & living pictures)
+                model = depth.find_model()
+                draw_settings_label(
+                    "Depth model:",
+                    "Depth Anything V2 Small (ONNX), for 3D & living pictures: huggingface.co/onnx-community/depth-anything-v2-small,\n"
+                    "folder onnx, model.onnx, saved as depth_anything_v2_small.onnx in Downloads (or set its path here).\n"
+                    f"Now: {model or 'not found'}" + (f"\n{depth.runtime_error()}" if depth.runtime_error() else "")
+                )
+                imgui.set_next_item_width(right_width)
+                changed, value = imgui.input_text("###lt_depth_path", p.get("depth_model_path", ""), 400)
+                if changed:
+                    p["depth_model_path"] = value.strip().strip('"')
+                    installdate.save_prefs()
+                    depth.forget_model()
+                draw_settings_label("Living pictures:", "How far near things move in living pictures (% of the picture width).\n"
+                                                        "Applied to every game that has them (restart the game).")
+                imgui.set_next_item_width(right_width)
+                changed, value = imgui.slider_float("###lt_depth_live", float(p.get("depth_live_amp", 1.2)), 0.3, 3.0, "%.1f %%")
+                if imgui.is_item_deactivated():
+                    depth.refresh_scripts()
+                if changed:
+                    p["depth_live_amp"] = round(value, 1)
+                    installdate.save_prefs()
+                draw_settings_label("3D depth:", "Separation between the two eyes in 3D side by side (% of the picture width).\n"
+                                                 "More = stronger relief, but tiring above 4 %. Restart the game after a change.")
+                imgui.set_next_item_width(right_width)
+                changed, value = imgui.slider_float("###lt_depth_3d", float(p.get("depth_3d_amp", 3.0)), 1.0, 6.0, "%.1f %%")
+                if imgui.is_item_deactivated():
+                    depth.refresh_scripts()
+                if changed:
+                    p["depth_3d_amp"] = round(value, 1)
+                    installdate.save_prefs()
                 draw_settings_label("Banner model:", "Photos / 3D renders suits most games; Drawings / anime for 2D art.\n"
                                                      "Changing it enlarges every banner again.")
                 models = list(visuals.MODELS)
@@ -5000,6 +5052,8 @@ class MainGUI():
                 ("Drives:", "balance", "Moves the games you have not played for the longest time from the fullest drives\n"
                                        "to the one with the most room (plan shown first).", pctools.open_balance_popup),
                 ("Engine:", "engine", "Identical Ren'Py engine files stored once per drive (hard links). Analyse first.", pctools.open_engine_popup),
+                ("3D pictures:", "depth", "Every Ren'Py 8.1+ game: depth maps for living pictures and 3D side by side (Shift+P in the game).",
+                 depth.open_all_popup),
                 ("HD & 60 fps:", "remaster", "Every Ren'Py game: HD pictures (8.4+ games under 1080p) and smoother animations (x2 fps),\n"
                                              "one file at a time in the background. Undo per game (right click > HD & 60 fps...).", remaster.open_all_popup),
                 ("Settings:", "settings", "Slideshow, shelf, banners, colours, cheats, Ren'Py preferences, Lossless Scaling,\n"

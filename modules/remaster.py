@@ -2,7 +2,8 @@
 HD & 60 fps (right click on a Ren'Py game > HD & 60 fps...): the game's own pictures and animations improved
 once, in the background, without touching the game's files.
 
-HD pictures (Ren'Py 8.4 or newer, games made for less than 1080p)
+HD pictures (Ren'Py 8.4 or newer, games made for less than the screen: 1080p, or 1440p / 2160p for the Quest 3
+    through Virtual Desktop, Library tools > Settings > HD for)
     Ren'Py 8.4+ looks for "picture@2.png" next to "picture.png" when the window is larger than the game
     (automatic oversampling) and shows it at the same place, with twice the detail. Every picture of the game
     (loose or inside its .rpa archives) is enlarged x4 by Real-ESRGAN (the tool used for the banners), brought
@@ -76,10 +77,23 @@ def _no_window() -> dict:
     return {}
 
 
+HD_TARGETS = (1080, 1440, 2160)
+
+
 def prefs() -> dict:
     p = installdate.prefs()
     p.setdefault("rife_path", "")
+    p.setdefault("hd_target", 1080)
     return p
+
+
+def hd_target() -> int:
+    """Height of the screen the games are played on (HD pictures for the games made for less)."""
+    with contextlib.suppress(Exception):
+        value = int(prefs()["hd_target"])
+        if value in HD_TARGETS:
+            return value
+    return 1080
 
 
 # ---------------------------------------------------------------------------
@@ -418,8 +432,9 @@ def analyse(game: Game) -> Analysis:
         a.hd_why = f"needs Ren'Py 8.4 or newer (this game: {'.'.join(map(str, a.version))})"
     elif a.size is None:
         a.hd_why = "game size not found in its scripts"
-    elif a.size[1] >= 1080:
-        a.hd_why = f"already made for {a.size[0]}x{a.size[1]}: nothing to gain on a 1080p screen"
+    elif a.size[1] >= hd_target():
+        a.hd_why = (f"already made for {a.size[0]}x{a.size[1]}: nothing to gain on a {hd_target()}p screen"
+                    + (" (Library tools > Settings > HD for: 1440p / 2160p for the Quest 3)" if hd_target() == 1080 else ""))
     else:
         a.hd_ok = True
     images = list_images(game_dir) if a.hd_ok else []
@@ -738,7 +753,9 @@ def _batch_plan(games: list, hd: bool, fps: bool) -> list:
         hd_here = False
         if hd:
             version, size = renpy_version(root), virtual_size(game_dir)
-            hd_here = bool(version) and version[:2] >= HD_MIN_VERSION and size is not None and size[1] < 1080
+            # every game at once: only the games made for less than 1080p (1080p games at 1440p / 2160p would need
+            # about 300 GB for the whole library: one by one, right click > HD & 60 fps...)
+            hd_here = bool(version) and version[:2] >= HD_MIN_VERSION and size is not None and size[1] < min(hd_target(), 1080)
             if hd_here:
                 count += sum(1 for m in list_images(game_dir) if not (game_dir / hd_name(m.key)).is_file())
         if fps:
@@ -832,7 +849,7 @@ def open_all_popup():
             if imgui.button("Cancel###rma_cancel"):
                 cancel_all()
             return
-        _, state["hd"] = imgui.checkbox("HD pictures (Ren'Py 8.4+ games made for less than 1080p only)###rma_hd", state["hd"])
+        _, state["hd"] = imgui.checkbox("HD pictures (Ren'Py 8.4+ games made for less than 1080p; 1080p games: one by one)###rma_hd", state["hd"])
         if state["hd"] and not t["esrgan"]:
             imgui.text_colored("   Real-ESRGAN not found: Library tools > Settings > Real-ESRGAN.", 0.95, 0.6, 0.2)
         _, state["fps"] = imgui.checkbox("Smoother animations (x2 fps), videos below 50 fps###rma_fps", state["fps"])

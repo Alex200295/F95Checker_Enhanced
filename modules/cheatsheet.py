@@ -418,6 +418,9 @@ init 999 python:
         return str(value)
 
     config.keymap["f95_cheat_menu"] = ["shift_K_c"]
+    for _f95_cm_k in ("shift_K_c", "C"):           # Ren'Py 7: Shift+C was also "clipboard voicing" (Alt+Shift+C still is)
+        if _f95_cm_k in config.keymap.get("clipboard_voicing", []):
+            config.keymap["clipboard_voicing"].remove(_f95_cm_k)
     config.underlay.append(renpy.Keymap(f95_cheat_menu=ToggleScreen("f95_cheat_menu")))
 
 screen f95_cheat_menu():

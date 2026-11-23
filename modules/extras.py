@@ -811,7 +811,7 @@ def _status(game: Game) -> dict:
     cached = _status_cache.get(game.id)
     if cached and now - cached[0] < 2:
         return cached[1]
-    from modules import cheatsheet, importupdate, pctools, remaster, toy
+    from modules import cheatsheet, depth, importupdate, pctools, remaster, toy
     exe = installdate._main_exe(game)
     s = {"exe": exe, "renpy": installdate.engine_now(game) == "Ren'Py", "engine": installdate.local_engine(game)}
     s["size"] = installdate.local_size(game)
@@ -825,6 +825,7 @@ def _status(game: Game) -> dict:
     s["unlock"] = installdate.unlock_enabled(game)
     s["cheatmenu"] = cheatsheet.menu_enabled(game)
     s["remaster"] = len(remaster.written_paths(game, exe)) if exe else 0
+    s["depth"] = depth.count_done(exe.parent) if exe else 0
     s["prefs"] = console is not None and console.with_name(installdate.PREFS_FILE).is_file()
     s["mods"] = importupdate.installed_mods(game)
     s["old_mods"] = installdate.outdated_mods_of(game)
@@ -836,7 +837,7 @@ def _status(game: Game) -> dict:
 
 def draw_status_tab(gui, game: Game):
     import imgui
-    from modules import callbacks, cheatsheet, importupdate, pctools, remaster, toy
+    from modules import callbacks, cheatsheet, depth, importupdate, pctools, remaster, toy
     s = _status(game)
     state = draw_status_tab.__dict__.setdefault("msg", {})
 
@@ -908,6 +909,8 @@ def draw_status_tab(gui, game: Game):
         act("Remove" if s["cheatmenu"] else "Add", lambda: cheatsheet.toggle_menu(game), "cheatmenu")
         row("HD & 60 fps", f"{s['remaster']} file(s) added" if s["remaster"] else "not used", good if s["remaster"] else None)
         act("Open...", lambda: remaster.open_popup(game), "remaster")
+        row("3D & living pictures", f"{s['depth']} depth map(s), Shift+P in the game" if s["depth"] else "not used", good if s["depth"] else None)
+        act("Open...", lambda: depth.open_popup(game), "depth")
         row("Shared preferences", "applied" if s["prefs"] else "not in this game", good if s["prefs"] else None)
         act("Apply now", lambda: "Applied." if installdate.ensure_renpy_prefs(game) else "Already up to date.", "prefs")
         mods = s["mods"]
