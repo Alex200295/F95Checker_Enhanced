@@ -2995,6 +2995,11 @@ class MainGUI():
                     self.draw_game_timeline_widget(game)
                     imgui.end_tab_item()
 
+                if imgui.begin_tab_item(icons.clipboard_check_outline + " Status###status")[0]:
+                    imgui.spacing()
+                    extras.draw_status_tab(self, game)
+                    imgui.end_tab_item()
+
                 if imgui.begin_tab_item((
                     icons.puzzle_check_outline if game.custom else
                     icons.puzzle_remove_outline
@@ -4608,12 +4613,28 @@ class MainGUI():
                         utils.push_popup(msgbox.msgbox, "Discretion key", f"'{ep['discreet_key']}' is not a key combination F95Checker understands.", MsgBox.warn)
                     else:
                         extras.restart_hotkey()
-                for key, label in (("discreet_mute", "mute the sound"), ("discreet_hide_f95", "minimise F95Checker too")):
-                    imgui.same_line()
+                for i, (key, label) in enumerate((("discreet_mute", "mute the sound"), ("discreet_hide_f95", "minimise F95Checker too"))):
+                    if i:
+                        imgui.same_line()
                     changed, value = imgui.checkbox(f"{label}###lt_{key}", bool(ep[key]))
                     if changed:
                         ep[key] = value
                         installdate.save_prefs()
+                draw_settings_label("Safe screen key:", "Anywhere in Windows: hides banners, game names, developers, tags and notes in\n"
+                                                        "F95Checker (it stays open). Press again to show them. Empty = no key (sidebar button only).")
+                imgui.set_next_item_width(right_width * 0.6)
+                changed, value = imgui.input_text("###lt_safe_key", ep["safe_key"], 40)
+                if changed:
+                    ep["safe_key"] = value.strip().lower()
+                    installdate.save_prefs()
+                imgui.same_line()
+                if imgui.button("Apply###lt_safe_apply"):
+                    if ep["safe_key"] and extras.parse_hotkey(ep["safe_key"]) is None:
+                        utils.push_popup(msgbox.msgbox, "Safe screen key", f"'{ep['safe_key']}' is not a key combination F95Checker understands.", MsgBox.warn)
+                    elif ep["safe_key"] and ep["safe_key"] in (ep["discreet_key"], pctools.prefs()["lossless_hotkey"]):
+                        utils.push_popup(msgbox.msgbox, "Safe screen key", f"'{ep['safe_key']}' is already used by another F95Checker shortcut.", MsgBox.warn)
+                    else:
+                        extras.restart_hotkey()
                 lock.draw_settings(draw_settings_label, right_width)
                 imgui.end_table()
 
@@ -4954,6 +4975,11 @@ class MainGUI():
                 draw_settings_label("Lock:", "Locks F95Checker now (your PIN to come back).")
                 if imgui.button(f"{icons.lock} Lock###lt_lock_now", width=right_width):
                     lock.lock_now()
+            draw_settings_label("Safe:", "Safe screen: banners, game names, developers, tags and notes hidden; F95Checker stays open.\n"
+                                         f"Also with {extras.prefs()['safe_key'] or 'its key (Library tools settings)'} anywhere in Windows. Press again to show everything.")
+            if imgui.button(f"{icons.eye_off_outline if extras.safe_screen_on() else icons.eye_outline} "
+                            f"{'On' if extras.safe_screen_on() else 'Off'}###lt_safe", width=right_width):
+                extras.toggle_safe_screen("button")
             imgui.end_table()
             imgui.spacing()
 

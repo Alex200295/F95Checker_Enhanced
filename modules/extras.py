@@ -51,6 +51,7 @@ def prefs() -> dict:
     p.setdefault("discreet_key", "ctrl+alt+h")
     p.setdefault("discreet_mute", True)
     p.setdefault("discreet_hide_f95", True)
+    p.setdefault("safe_key", "ctrl+alt+b")
     return p
 
 
@@ -285,20 +286,28 @@ def _hotkey_loop():
         import ctypes.wintypes
         user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
         _hotkey_thread_id = kernel32.GetCurrentThreadId()
-        parsed = parse_hotkey(prefs()["discreet_key"])
-        if parsed is None:
-            _log(f"Discretion key not understood: {prefs()['discreet_key']!r}")
+        actions = {}
+        for hotkey_id, key, label, action in ((0x95C, "discreet_key", "Discretion key", toggle_discretion),
+                                              (0x95D, "safe_key", "Safe screen key", toggle_safe_screen)):
+            if not prefs()[key]:
+                continue
+            parsed = parse_hotkey(prefs()[key])
+            if parsed is None:
+                _log(f"{label} not understood: {prefs()[key]!r}")
+            elif not user32.RegisterHotKey(None, hotkey_id, parsed[0] | 0x4000, parsed[1]):    # MOD_NOREPEAT
+                _log(f"{label} {prefs()[key]} could not be registered (used by another program?)")
+            else:
+                _log(f"{label}: {prefs()[key]}")
+                actions[hotkey_id] = action
+        if not actions:
             return
-        if not user32.RegisterHotKey(None, 0x95C, parsed[0] | 0x4000, parsed[1]):    # MOD_NOREPEAT
-            _log(f"Discretion key {prefs()['discreet_key']} could not be registered (used by another program?)")
-            return
-        _log(f"Discretion key: {prefs()['discreet_key']}")
         msg = ctypes.wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-            if msg.message == 0x0312 and msg.wParam == 0x95C:     # WM_HOTKEY
+            if msg.message == 0x0312 and msg.wParam in actions:     # WM_HOTKEY
                 with contextlib.suppress(Exception):
-                    toggle_discretion()
-        user32.UnregisterHotKey(None, 0x95C)
+                    actions[msg.wParam]()
+        for hotkey_id in actions:
+            user32.UnregisterHotKey(None, hotkey_id)
     except Exception as exc:
         _log(f"Discretion key thread error: {exc}")
 
@@ -306,7 +315,7 @@ def _hotkey_loop():
 def restart_hotkey():
     """Library tools: new key typed -> registered again."""
     _stop_hotkey()
-    if globals.os is Os.Windows and prefs()["discreet_key"]:
+    if globals.os is Os.Windows and (prefs()["discreet_key"] or prefs()["safe_key"]):
         threading.Thread(target=_hotkey_loop, name="discretion-key", daemon=True).start()
 
 
@@ -725,3 +734,192 @@ def after_game_exit(game: Game, started: float):
             open_diagnosis_popup(game, d)
     except Exception as exc:
         _log(f"Crash check of {game.name}: {exc!r}")
+
+
+# ---------------------------------------------------------------------------
+# Safe screen (Library tools button, default Ctrl+Alt+B anywhere in Windows)
+# ---------------------------------------------------------------------------
+#   F95Checker stays open but shows nothing explicit: banners replaced by a plain tile, game names by
+#   "Title 01234", developer, tags, labels, notes and descriptions hidden. Press again to get everything back.
+#   Only what the window SHOWS changes (the interface thread): refresh, database and saves see the real data.
+
+_safe_on = False
+_placeholder = None
+_SAFE_ATTRS = frozenset({"name", "image", "developer", "tags", "unknown_tags", "description", "changelog", "notes", "labels",
+                         "preview_images", "previews_urls"})      # thread screenshots: info popup and hover slideshow
+
+
+def safe_screen_on() -> bool:
+    return _safe_on
+
+
+def _safe_placeholder():
+    global _placeholder
+    if _placeholder is None:
+        from external import imagehelper
+        folder = globals.data_path / "safe_screen"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / "tile.png"
+        if not path.is_file():
+            from PIL import Image
+            Image.new("RGB", (960, 450), (40, 42, 48)).save(path)
+        _placeholder = imagehelper.ImageHelper(folder, glob="tile.*")
+    return _placeholder
+
+
+def _safe_getattribute(self, attr):
+    if attr in _SAFE_ATTRS and threading.current_thread() is threading.main_thread():
+        if attr == "name":
+            return f"Title {object.__getattribute__(self, 'id') % 100000:05d}"
+        if attr == "image":
+            return _safe_placeholder()
+        if attr in ("tags", "unknown_tags", "previews_urls"):
+            return ()
+        if attr in ("labels", "preview_images"):
+            return []
+        return ""
+    return object.__getattribute__(self, attr)
+
+
+def toggle_safe_screen(origin: str = "hotkey"):
+    global _safe_on
+    from common.structs import Game
+    if not _safe_on:
+        with contextlib.suppress(Exception):
+            _safe_placeholder()
+        Game.__getattribute__ = _safe_getattribute
+        _safe_on = True
+    else:
+        with contextlib.suppress(AttributeError):
+            del Game.__getattribute__
+        _safe_on = False
+    globals.safe_screen = _safe_on
+    if globals.gui is not None:
+        globals.gui.recalculate_ids = True
+    _log(f"Safe screen {'on' if _safe_on else 'off'} ({origin})")
+
+
+# ---------------------------------------------------------------------------
+# Status tab of the game info (everything F95Checker added or found for this game, with its action)
+# ---------------------------------------------------------------------------
+
+_status_cache: dict[int, tuple[float, dict]] = {}
+
+
+def _status(game: Game) -> dict:
+    now = time.monotonic()
+    cached = _status_cache.get(game.id)
+    if cached and now - cached[0] < 2:
+        return cached[1]
+    from modules import importupdate, pctools, toy
+    exe = installdate._main_exe(game)
+    s = {"exe": exe, "renpy": installdate.engine_now(game) == "Ren'Py", "engine": installdate.local_engine(game)}
+    s["size"] = installdate.local_size(game)
+    s["compressed"] = pctools.is_compressed(game)
+    s["dlss"] = pctools.dlss5_state(game)
+    s["reshade"] = pctools.reshade_enabled(game)
+    cfg = pctools.prefs()["display"].get(str(game.id), {})
+    s["ls"] = "off" if not cfg.get("lossless") else cfg.get("ls_mode", "scale")
+    console = installdate._console_path(game)
+    s["cheats"] = installdate.cheats_enabled(game)
+    s["unlock"] = installdate.unlock_enabled(game)
+    s["prefs"] = console is not None and console.with_name(installdate.PREFS_FILE).is_file()
+    s["mods"] = importupdate.installed_mods(game)
+    s["old_mods"] = installdate.outdated_mods_of(game)
+    s["crash"] = _crash_file(game)
+    s["toy"] = toy.toy_display(game) if toy.is_enabled(game.id) else "off"
+    _status_cache[game.id] = (now, s)
+    return s
+
+
+def draw_status_tab(gui, game: Game):
+    import imgui
+    from modules import callbacks, cheatsheet, importupdate, pctools, toy
+    s = _status(game)
+    state = draw_status_tab.__dict__.setdefault("msg", {})
+
+    def act(label: str, func, uid: str):
+        if imgui.small_button(f"{label}###st_{uid}_{game.id}"):
+            try:
+                result = func()
+                state[game.id] = result if isinstance(result, str) else ""
+            except Exception as exc:
+                state[game.id] = f"Failed: {exc}"
+            _status_cache.pop(game.id, None)
+        imgui.same_line()
+
+    def row(label: str, value: str, color=None):
+        imgui.table_next_row()
+        imgui.table_next_column()
+        imgui.text_disabled(label)
+        imgui.table_next_column()
+        if color:
+            imgui.text_colored(value, *color)
+        else:
+            imgui.text(value)
+        imgui.table_next_column()
+
+    good, warn, bad = (0.4, 0.85, 0.4), (0.95, 0.7, 0.2), (0.95, 0.4, 0.35)
+    if not imgui.begin_table(f"###status_{game.id}", 3, imgui.TABLE_ROW_BACKGROUND):
+        return
+    imgui.table_setup_column("", imgui.TABLE_COLUMN_WIDTH_FIXED, gui.scaled(150))
+    imgui.table_setup_column("", imgui.TABLE_COLUMN_WIDTH_STRETCH)
+    imgui.table_setup_column("", imgui.TABLE_COLUMN_WIDTH_FIXED, gui.scaled(300))
+    # version
+    up_to_date = game.installed and game.installed == game.version
+    row("Version", f"{game.installed or 'not installed'}" + ("" if up_to_date or not game.installed else f"  ->  {game.version} available"),
+        good if up_to_date else warn if game.installed else None)
+    if game.installed and not up_to_date:
+        act("Import Update", lambda: importupdate.import_update(game), "imp")
+        if game.downloads and not game.custom:
+            act("Download Update", lambda: installdate.start_download(game), "dl")
+    # folder
+    exe = s["exe"]
+    row("Folder", str(exe.parent) if exe else "executable not found", None if exe else bad)
+    if exe:
+        act("Open", lambda: callbacks.open_game_folder(game), "open")
+    row("Size", (installdate.size_display(s["size"]) if s["size"] else "?") + ("  (compressed)" if s["compressed"] else ""))
+    if exe:
+        act("Uncompress" if s["compressed"] else "Compress",
+            lambda: async_thread.run(pctools.compress_game(game, uncompress=s["compressed"])) and "Started (see Compress).", "comp")
+    row("Engine", s["engine"] or "?")
+    # graphics
+    if s["dlss"] != "n/a":
+        row("DLSS 5", {"installed": "installed", "other": "ReShade / DLSS put there another way", "": "not installed"}[s["dlss"]],
+            good if s["dlss"] == "installed" else None)
+        if s["dlss"] == "installed":
+            act("Remove", lambda: pctools.dlss5_remove(game) or "DLSS 5 removed.", "dlssrm")
+        elif s["dlss"] == "":
+            act("Install", lambda: pctools.dlss5_install(game) or "DLSS 5 installed.", "dlssin")
+    if s["reshade"] is not None:
+        row("ReShade", "on" if s["reshade"] else "off (dxgi.dll.off)", good if s["reshade"] else None)
+        act("Turn off" if s["reshade"] else "Turn on", lambda: pctools.set_reshade(game, not s["reshade"]) or "Done.", "rs")
+    row("Lossless Scaling", {"off": "off", "scale": "scaling", "framegen": "frame generation"}.get(s["ls"], s["ls"]))
+    # Ren'Py
+    if s["renpy"]:
+        row("Cheats console", "on (Shift+O in game)" if s["cheats"] else "off", good if s["cheats"] else None)
+        act("Disable" if s["cheats"] else "Enable", lambda: installdate.toggle_cheats(game), "cheat")
+        act("Cheat sheet", lambda: cheatsheet.open_popup(game), "sheet")
+        row("Gallery & replays", "unlocked" if s["unlock"] else "normal", good if s["unlock"] else None)
+        act("Lock" if s["unlock"] else "Unlock", lambda: installdate.toggle_unlock(game), "unlock")
+        row("Shared preferences", "applied" if s["prefs"] else "not in this game", good if s["prefs"] else None)
+        act("Apply now", lambda: "Applied." if installdate.ensure_renpy_prefs(game) else "Already up to date.", "prefs")
+        mods = s["mods"]
+        row("Mods installed", ", ".join(m.get("name", "?") for m in mods) if mods else "none")
+        act("Install a mod...", lambda: importupdate.install_mod(game), "modin")
+        if mods:
+            act("Uninstall...", lambda: importupdate.open_installed_mods_popup(game), "modun")
+        if s["old_mods"]:
+            row("Outdated mods", f"{len(s['old_mods'])}: " + ", ".join(s["old_mods"][:3]) + ("..." if len(s["old_mods"]) > 3 else ""), warn)
+            act("Check", lambda: installdate.open_outdated_mods_popup([game]), "oldmods")
+        crash = s["crash"]
+        row("Last error", f"{crash.name}, {time.strftime('%Y-%m-%d %H:%M', time.localtime(crash.stat().st_mtime))}" if crash else "none",
+            warn if crash else good)
+        if crash:
+            act("What went wrong?", lambda: open_diagnosis_popup(game), "crash")
+    # toy
+    row("Toy", s["toy"])
+    act("Panel", lambda: toy.open_panel(game), "toy")
+    imgui.end_table()
+    if state.get(game.id):
+        imgui.text_colored(state[game.id], *good)

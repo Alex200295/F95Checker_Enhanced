@@ -377,7 +377,7 @@ def apply_all():
 
 def blurred_image(game: Game):
     """Blurred, darker banner (info popup background) or None."""
-    if not prefs()["game_colors"]:
+    if not prefs()["game_colors"] or getattr(globals, "safe_screen", False):
         return None
     entry = index().get(str(game.id))
     if not (isinstance(entry, dict) and entry.get("blur")):
