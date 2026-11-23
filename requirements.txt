@@ -46,3 +46,6 @@ numpy==2.2.6
 av==19.0.2 ; python_version >= "3.12"
 av==14.0.1 ; python_version < "3.12"
 soundcard==0.4.6
+
+# 3D & living pictures (modules/depth.py): Depth Anything V2 on the graphics card (DirectML)
+onnxruntime-directml==1.24.3 ; sys_platform == "win32"

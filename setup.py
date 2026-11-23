@@ -24,10 +24,11 @@ except ModuleNotFoundError:
 
 # Build configuration
 includes = []
-excludes = ["tkinter"]
+excludes = ["tkinter", "onnxruntime.transformers", "onnxruntime.quantization", "onnxruntime.tools"]  # only InferenceSession is used
 packages = ["OpenGL", "numpy", "av", "soundcard"]  # toy modules import them lazily: cx_Freeze must be told
 platform_packages = {
     "linux": ["dbus_fast"],
+    "win32": ["onnxruntime"],  # 3D & living pictures (modules/depth.py), imported lazily
 }
 constants = []
 bin_includes = []
@@ -62,6 +63,7 @@ zip_include_files = []
 zip_include_packages = "*"
 zip_exclude_packages = [
     "av",         # FFmpeg DLLs
+    "onnxruntime",  # DirectML / ONNX Runtime DLLs
     "bencode2",
     "cffi",       # soundcard loads its C headers from files
     "numpy",
