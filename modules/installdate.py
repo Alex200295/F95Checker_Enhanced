@@ -833,7 +833,6 @@ async def scan_library(*games: Game, manual=True, reserved=False):
         _log(f"Toy sync scripts: {error.traceback()}")
     try:
         from modules import pctools  # pctools imports this module
-        await loop.run_in_executor(None, pctools.dlss5_repair_all, games)
         for line in await loop.run_in_executor(None, pctools.auto_tidy, games):
             report.exe_relocated.append(f"tidied up: {line}")
     except Exception:

@@ -299,6 +299,34 @@ def _backup_saves(plan: Plan) -> pathlib.Path | None:
     return target
 
 
+ENGINE_DIRS = ("renpy", "lib")
+
+
+def _set_aside_old_engine(dest: pathlib.Path, installed: list[pathlib.Path]) -> int:
+    """The archive brought a whole Ren'Py engine: engine files it does not have are the previous engine's.
+    Left there they can stop the game from starting (e.g. 00layeredimage.rpy next to 00layeredimage_ren.py),
+    so they are moved to <game>/_f95checker_old_engine/ (not deleted). Returns how many."""
+    new = {os.path.normcase(str(p)) for p in installed}
+    engine_files = [p for p in installed if p.relative_to(dest).parts[:1] == ("renpy",)]
+    if len(engine_files) < 20 or not (dest / "renpy" / "__init__.py").is_file():
+        return 0                            # a patch, not a whole engine
+    moved = 0
+    for sub in ENGINE_DIRS:
+        for current, _, names in os.walk(dest / sub):
+            for name in names:
+                path = pathlib.Path(current) / name
+                if os.path.normcase(str(path)) in new:
+                    continue
+                target = dest / installdate.OLD_ENGINE_DIR / path.relative_to(dest)
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(path, target)
+                    moved += 1
+                except OSError as exc:
+                    _log(f"Old engine file not moved {path}: {exc}")
+    return moved
+
+
 def _install(plan: Plan, job: Job) -> str:
     """Blocking part (worker thread). Returns the summary text."""
     staging = plan.dest.parent / f".f95checker-import-{plan.game.id}-{int(time.time())}"
@@ -326,9 +354,13 @@ def _install(plan: Plan, job: Job) -> str:
                 raise IsADirectoryError(f"{dst} is a folder in the game but a file in the archive")
             os.replace(src, dst)            # same drive: instant, overwrites
             job.done += 1
+        old_engine = _set_aside_old_engine(plan.dest, [dst for _, dst in moves])
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     lines = [f"{len(moves)} files installed into {plan.dest} ({plan.replaced} replaced, {plan.added} new)."]
+    if old_engine:
+        lines.append(f"{old_engine} file(s) of the previous Ren'Py engine set aside in {installdate.OLD_ENGINE_DIR} "
+                     "(an old engine file left next to the new one stops the game from starting).")
     if backup:
         lines.append(f"Saves backed up to {backup}.")
     return "\n".join(lines)

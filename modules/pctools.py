@@ -1483,7 +1483,6 @@ DLSS5_LINKED = [
     "dxgi.dll", "dlss5-feed.addon64", "renodx-dlss5.addon64", "nvngx_dlss.dll", "nvngx_dlssnr.dll",
     "reshade-shaders/Shaders/DLSS5_Feed.fx", "reshade-shaders/Shaders/ReShade.fxh", "reshade-shaders/Shaders/ReShadeUI.fxh",
     "reshade-shaders/Shaders/LumeniteFX/lumenite_Kernel.fx",
-    "reshade-shaders/Shaders/LumeniteFX/include/lumenite_ColorManagement.fxh",
     "reshade-shaders/Shaders/LumeniteFX/include/lumenite_Compute.fxh",
     "reshade-shaders/Shaders/LumeniteFX/include/lumenite_Helpers.fxh",
     "reshade-shaders/Shaders/LumeniteFX/include/lumenite_Projections.fxh",
@@ -1609,44 +1608,6 @@ def dlss5_install(game: Game) -> str:
     }, indent=1), encoding="utf-8")
     _log(f"DLSS 5 kit installed in {folder}")
     return ""
-
-
-def dlss5_repair(game: Game) -> int:
-    """Links the kit files added since this game was installed (listed in DLSS5_LINKED, missing in the game).
-    Returns how many were added. Silent: missing kit file or locked folder = nothing done."""
-    import json
-    import shutil
-    folder = dlss5_folder(game)
-    if folder is None or dlss5_state(game) != "installed":
-        return 0
-    kit = dlss5_kit(folder)
-    if kit is None:
-        return 0
-    added = []
-    try:
-        data = json.loads((folder / DLSS5_MANIFEST).read_text(encoding="utf-8"))
-        for rel in DLSS5_LINKED:
-            dst = folder / rel
-            if dst.exists() or dst.with_name(dst.name + ".off").exists() or not (kit / rel).is_file():
-                continue                     # present, switched off by the user (dxgi.dll.off), or not in the kit
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.link(kit / rel, dst)
-            except OSError:
-                shutil.copy2(kit / rel, dst)
-            added.append(rel)
-            if rel not in data["files"]:
-                data["files"].insert(0, rel)
-        if added:
-            (folder / DLSS5_MANIFEST).write_text(json.dumps(data, indent=1), encoding="utf-8")
-            _log(f"DLSS 5 kit completed in {folder}: {', '.join(added)}")
-    except (OSError, ValueError, KeyError) as exc:
-        _log(f"DLSS 5 repair failed in {folder}: {exc}")
-    return len(added)
-
-
-def dlss5_repair_all(games=None) -> int:
-    return sum(dlss5_repair(game) for game in (games if games is not None else globals.games.values()))
 
 
 def dlss5_remove(game: Game) -> str:
