@@ -23,6 +23,9 @@ Safety, always on:
 
 Lovense Max 2 in Intiface: "Vibrate" (20 steps) + "Constrict" (air pump, few steps, slow). Any
 actuator named Vibrate / Oscillate is driven by the vibration track, Constrict / Inflate by the air one.
+Strokers (The Handy, Kiiroo Keon...: Intiface "LinearCmd") follow the funscript positions themselves,
+one move per script action, sent just before it starts; without a script (or a flat one) they do a
+plain up-and-down whose speed follows the vibration level. Several toys at once are fine.
 Data: <F95Checker data>/toy.json, toy_patterns/*.json, toy_scripts/<game id>/*.funscript.
 """
 import asyncio
@@ -80,6 +83,10 @@ DEFAULT_SETTINGS = {
     "max_vibe": 0.70,               # caps, 0..1 of the toy's maximum
     "max_air": 0.60,
     "soft_start_s": 4.0,
+    "stroke_min": 0.0,              # strokers: lowest / highest position used, 0..1 of the device's length
+    "stroke_max": 1.0,
+    "max_stroke_speed": 3.0,        # strokers: lengths per second at most (3 = a full stroke in 0.33 s)
+    "stroke_lead_ms": 0,            # strokers: send each move this much earlier (Bluetooth delay)
     "pause_unfocused": True,
     "idle_stop_s": 15,              # mode B: stop when the game sends nothing for this long
     "session_max_min": 90,
@@ -189,6 +196,7 @@ class Device:
     name: str
     vibe: list[Feature]
     air: list[Feature]
+    linear: list[Feature] = dataclasses.field(default_factory=list)   # strokers (LinearCmd: position + duration)
     sent: dict = dataclasses.field(default_factory=dict)   # feature index -> last step sent
     air_sent_at: float = 0.0
 
@@ -290,10 +298,13 @@ class ButtplugClient:
                 vibe.append(feature)
             elif actuator in AIR_ACTUATORS:
                 air.append(feature)
+        linear = [Feature(i, max(1, int(attr.get("StepCount") or 1)), attr.get("ActuatorType", "Position"))
+                  for i, attr in enumerate(dev.get("DeviceMessages", {}).get("LinearCmd", []) or [])]
         index = int(dev.get("DeviceIndex", 0))
         name = dev.get("DeviceDisplayName") or dev.get("DeviceName") or f"Device {index}"
-        self.devices[index] = Device(index, name, vibe, air)
-        _log(f"Device: {name} (vibration x{len(vibe)} {[f.steps for f in vibe]}, air x{len(air)} {[f.steps for f in air]})")
+        self.devices[index] = Device(index, name, vibe, air, linear)
+        _log(f"Device: {name} (vibration x{len(vibe)} {[f.steps for f in vibe]}, air x{len(air)} {[f.steps for f in air]}, "
+             f"stroke x{len(linear)})")
 
     async def _reader(self):
         import aiohttp
@@ -360,6 +371,22 @@ class ButtplugClient:
                 if scalars:
                     with contextlib.suppress(Exception):
                         await self._send("ScalarCmd", DeviceIndex=dev.index, Scalars=scalars)
+
+    def has_linear(self) -> bool:
+        return any(dev.linear for dev in self.devices.values())
+
+    async def send_linear(self, position: float, duration_ms: int):
+        """Strokers: go to position (0 = bottom, 1 = top) in duration_ms."""
+        if not self.connected:
+            return
+        position = max(0.0, min(1.0, position))
+        duration_ms = max(1, int(duration_ms))
+        async with self._lock:
+            for dev in list(self.devices.values()):
+                if dev.linear:
+                    vectors = [{"Index": f.index, "Duration": duration_ms, "Position": round(position, 4)} for f in dev.linear]
+                    with contextlib.suppress(Exception):
+                        await self._send("LinearCmd", DeviceIndex=dev.index, Vectors=vectors)
 
     async def stop_all(self):
         for dev in self.devices.values():
@@ -532,6 +559,36 @@ def script_air(script: toygen.Script, t_ms: float) -> float | None:
             break
         level = value
     return level
+
+
+def script_is_flat(script: toygen.Script) -> bool:
+    """No real movement (a still frame analysed as an animation): strokers do the plain up-and-down instead."""
+    return max(script.pos) - min(script.pos) < 0.05
+
+
+def script_segment(script: toygen.Script, t_ms: float, invert: bool) -> tuple[int, float, float]:
+    """Next move of a stroker following the script at t_ms (looping):
+    (segment number, target position 0..1, ms left to reach it). The segment number changes at each action."""
+    times, pos = script.times, script.pos
+    if len(times) == 1:
+        p = pos[0]
+        return 0, (1 - p if invert else p), 0.0
+    duration = max(script.duration_ms, times[-1], 1)
+    loop_n, t = divmod(t_ms, duration)
+    i = bisect.bisect_right(times, t)
+    if i >= len(times):                       # last action passed: next is the first one of the next loop
+        target_t, target, seg = times[0] + duration, pos[0], (int(loop_n) + 1) * len(times)
+    else:
+        target_t, target, seg = times[i], pos[i], int(loop_n) * len(times) + i
+    return seg, (1 - target if invert else target), target_t - t
+
+
+@dataclasses.dataclass(slots=True)
+class StrokeState:
+    seg: object = None              # last script segment sent, "level" while doing the plain up-and-down
+    up: bool = False
+    next_at: float = 0.0
+    last_pos: float = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -1335,6 +1392,8 @@ class Engine:
         self.zero_since = time.monotonic()
         self.speed_avg = 0.0
         self.speed_short = 0.0
+        self.stroke = None               # what strokers follow this tick: ("script", script, t_ms, invert) / ("level", 0..1) / None
+        self.stroke_state = StrokeState()
         self.live_test: tuple[float, float] | None = None   # panel sliders
         self.ghr_process = None
         self.resume_client_after = False
@@ -1389,6 +1448,7 @@ class Engine:
         self.live_test = None
         self.status = reason
         self.vibe = self.air = 0.0
+        self.stroke, self.stroke_state = None, StrokeState()
         await self.client.stop_all()
         if was_external and self.resume_client_after:
             self.resume_client_after = False
@@ -1426,10 +1486,12 @@ class Engine:
             now = time.monotonic()
             vibe, air = 0.0, None
             try:
+                self.stroke = None
                 if self.estopped:
                     vibe, air = 0.0, 0.0
                 elif self.live_test is not None:
                     vibe, air = self.live_test
+                    self.stroke = ("level", vibe)
                 elif self.source:
                     vibe, air = await self._source_value(now)
                 vibe = max(0.0, min(1.0, vibe))
@@ -1459,6 +1521,7 @@ class Engine:
                 if now - last_send >= 0.1 or (out == 0.0 and self.vibe != 0.0):
                     await self.client.send_levels(out, air_out)
                     last_send = now
+                await self._drive_strokers(now, None if self.estopped else self.stroke, ramp)
                 self.vibe, self.air = out, (air_out if air_out is not None else self.air)
                 if not self.source and self.live_test is None and out == 0.0 and smooth < 0.005:
                     await self.client.send_levels(0.0, 0.0, force=True)
@@ -1494,6 +1557,7 @@ class Engine:
             if finished:
                 await self.stop(f"Pattern {self.pattern_name} finished")
                 return 0.0, 0.0
+            self.stroke = ("level", vibe)
             return vibe, air
         if game is None:
             return 0.0, 0.0
@@ -1521,6 +1585,7 @@ class Engine:
         if self.source == "A":
             if not self.audio.running and self.audio.error:
                 self.status = self.audio.error
+            self.stroke = ("level", self.audio.vibe * gcfg["intensity"])
             return self.audio.vibe * gcfg["intensity"], self.audio.air * gcfg["air"]
         # --- Ren'Py sync ----------------------------------------------------------
         state = self.hook.get(game.id)
@@ -1550,6 +1615,7 @@ class Engine:
         t -= gcfg["offset_ms"]
         if override and override in patterns():
             vibe, air, _ = pattern_value(patterns()[override], t)
+            self.stroke = ("level", vibe * gcfg["intensity"])
             return vibe * gcfg["intensity"], air * gcfg["air"]
         script = self._script(game, key)
         if script is None:
@@ -1557,7 +1623,13 @@ class Engine:
                 _ondemand.add((game.id, key))
                 asyncio.create_task(_generate_one(game, key))
             vibe, air, _ = pattern_value(BUILTIN_PATTERNS["Generic loop"], t)
+            self.stroke = ("level", vibe * gcfg["intensity"] * 0.8)
             return vibe * gcfg["intensity"] * 0.8, air * gcfg["air"]
+        if script_is_flat(script):
+            generic, _, _ = pattern_value(BUILTIN_PATTERNS["Generic loop"], t)
+            self.stroke = ("level", generic * gcfg["intensity"] * 0.8)
+        else:
+            self.stroke = ("script", script, t + float(cfg["stroke_lead_ms"]), gcfg["invert"])
         position, speed = script_value(script, t, gcfg["invert"])
         speed_level = min(1.0, speed / STROKE_FULL_SPEED)
         # stroke intensity = speed averaged over ~1 stroke (instant speed is 0 at every turn)
@@ -1571,6 +1643,44 @@ class Engine:
         if air is None:
             air = self.speed_avg
         return vibe * gcfg["intensity"], air * gcfg["air"]
+
+    async def _drive_strokers(self, now: float, stroke, ramp: float):
+        """Strokers: one move per script action (target + time to reach it), or a plain up-and-down."""
+        c = self.client
+        if not c.connected or not c.has_linear():
+            return
+        st = self.stroke_state
+        if stroke is None:
+            st.seg = None                    # nothing sent: the device ends its move and stays there
+            return
+        cfg = settings()
+        if stroke[0] == "script":
+            _, script, t, invert = stroke
+            seg, target, duration = script_segment(script, t, invert)
+            if seg == st.seg:
+                return
+            st.seg = seg
+        else:
+            level = max(0.0, min(1.0, float(stroke[1])))
+            if level < 0.05:
+                st.seg = None
+                return
+            if st.seg == "level" and now < st.next_at:
+                return
+            half = (1.6 - 1.1 * level) / 2              # 1.6 s strokes when soft .. 0.5 s at full level
+            depth = 0.4 + 0.6 * level
+            st.up = not st.up
+            target = 0.5 + (depth if st.up else -depth) / 2
+            duration = half * 1000
+            st.seg, st.next_at = "level", now + half
+        lo, hi = sorted((float(cfg["stroke_min"]), float(cfg["stroke_max"])))
+        hi = max(hi, min(1.0, lo + 0.05))
+        target = 0.5 + (target - 0.5) * max(0.0, min(1.0, ramp))   # soft start: short strokes around the middle first
+        position = lo + (hi - lo) * target
+        # safety: never faster than max_stroke_speed (the move takes longer instead)
+        duration = max(duration, abs(position - st.last_pos) / max(0.2, float(cfg["max_stroke_speed"])) * 1000, 20)
+        st.last_pos = position
+        await c.send_linear(position, int(duration))
 
     def _script(self, game: Game, key: str) -> toygen.Script | None:
         cache_key = (game.id, key)
@@ -1871,7 +1981,9 @@ def _draw_panel():
             async_thread.run(engine.client.scan())
     elif imgui.small_button("Connect"):
         async_thread.run(engine.connect())
-    imgui.text(f"Output: {int(engine.vibe * 100)}% vibration, {int(engine.air * 100)}% air  -  {engine.status}"
+    stroke_text = (f", stroke at {int(engine.stroke_state.last_pos * 100)}%"
+                   if engine.client.connected and engine.client.has_linear() else "")
+    imgui.text(f"Output: {int(engine.vibe * 100)}% vibration, {int(engine.air * 100)}% air{stroke_text}  -  {engine.status}"
                f"{('  (paused: ' + engine.paused_reason + ')') if engine.paused_reason else ''}")
     if engine.estopped:
         if imgui.button(f"{icons.play} Resume (emergency stop is latched)"):
@@ -1919,6 +2031,20 @@ def _draw_panel():
         changed, value = _slider("Soft start (s)###toy_soft", s["soft_start_s"], 0.0, 15.0, "%.1f", width)
         if changed:
             s["soft_start_s"], dirty = value, True
+        imgui.text("Strokers (The Handy, Keon...):")
+        changed, value = _slider("Lowest position###toy_smin", s["stroke_min"], 0.0, 0.9, "%.2f", width)
+        if changed:
+            s["stroke_min"], dirty = value, True
+        changed, value = _slider("Highest position###toy_smax", s["stroke_max"], 0.1, 1.0, "%.2f", width)
+        if changed:
+            s["stroke_max"], dirty = value, True
+        changed, value = _slider("Max speed (lengths/s)###toy_sspeed", s["max_stroke_speed"], 0.5, 5.0, "%.1f", width)
+        if changed:
+            s["max_stroke_speed"], dirty = value, True
+        imgui.set_next_item_width(width)
+        changed, value = imgui.slider_int("Send moves earlier (ms)###toy_slead", int(s["stroke_lead_ms"]), 0, 500)
+        if changed:
+            s["stroke_lead_ms"], dirty = value, True
         imgui.set_next_item_width(width)
         changed, value = imgui.slider_int("Stop if game silent (s)###toy_idle", int(s["idle_stop_s"]), 5, 120)
         if changed:
