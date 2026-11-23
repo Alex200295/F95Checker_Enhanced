@@ -63,6 +63,7 @@ from external import (
 from modules import (
     api,
     callbacks,
+    cheatsheet,
     colors,
     db,
     discover,
@@ -1881,6 +1882,13 @@ class MainGUI():
                 "Adds one small script file to the game folder, removed when you disable it.",
                 text=None,
             )
+            if imgui.selectable(f"{icons.clipboard_list_outline} Cheat sheet", False)[0]:
+                cheatsheet.open_popup(game)
+            self.draw_hover_text(
+                "The variables of this game (money, love points, stats, items...) read from its scripts,\n"
+                "with a Copy button: paste the line in the console (Shift+O, Ctrl+V, Enter).",
+                text=None,
+            )
         toy.draw_context_menu(game)
         pctools.draw_context_menu(game)
         if game and imgui.selectable(f"{icons.puzzle_outline} Mods & Extras", False)[0]:
@@ -2640,6 +2648,9 @@ class MainGUI():
                 cheats_on = installdate.cheats_enabled(game)
                 if imgui.button(f"{icons.cheese} {'Disable' if cheats_on else 'Enable'} Cheats"):
                     installdate.toggle_cheats(game)
+                imgui.same_line()
+                if imgui.button(f"{icons.clipboard_list_outline} Cheat sheet"):
+                    cheatsheet.open_popup(game)
             if game.installed != game.version and not game.custom and game.downloads:
                 imgui.same_line()
                 if imgui.button(f"{icons.download} Download Update"):
