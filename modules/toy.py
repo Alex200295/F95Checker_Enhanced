@@ -757,6 +757,38 @@ TEXT_RES = {
 }
 _native_cache: dict[int, tuple[str, str, str]] = {}      # game id -> (folder, kind, reason)
 _native_pending: set[int] = set()
+_native_loaded = False
+# One game at a time, in the background: checking the 200+ games at once (Toy column shown or sorted) made
+# F95Checker crawl for minutes and held up the Refresh (all threads fighting for Python).
+_native_pool = concurrent.futures.ThreadPoolExecutor(1, thread_name_prefix="toy-native")
+
+
+def _native_file() -> pathlib.Path:
+    return globals.data_path / "toy_native.json"
+
+
+def _native_load():
+    """Results of the previous sessions (toy_native.json): a game is checked again only when its folder changes."""
+    global _native_loaded
+    if _native_loaded:
+        return
+    _native_loaded = True
+    try:
+        data = json.loads(_native_file().read_text(encoding="utf-8"))
+        for game_id, value in data.items():
+            if isinstance(value, list) and len(value) == 3 and int(game_id) not in _native_cache:
+                _native_cache[int(game_id)] = (str(value[0]), str(value[1]), str(value[2]))
+    except (OSError, ValueError):
+        pass
+
+
+def _native_save():
+    try:
+        tmp = _native_file().with_suffix(".tmp")
+        tmp.write_text(json.dumps({str(k): list(v) for k, v in _native_cache.items()}), encoding="utf-8")
+        os.replace(tmp, _native_file())
+    except OSError as exc:
+        _log(f"Cannot save {_native_file().name}: {exc}")
 
 
 def _kind_of_name(name: str) -> str:
@@ -772,6 +804,7 @@ def detect_native(game: Game) -> tuple[str, str]:
     if exe is None:
         return "", ""
     folder = exe.parent
+    _native_load()
     cached = _native_cache.get(game.id)
     if cached and cached[0] == str(folder):
         return cached[1], cached[2]
@@ -820,12 +853,14 @@ def detect_native(game: Game) -> tuple[str, str]:
     except OSError:
         pass
     _native_cache[game.id] = (str(folder), kind, reason)
+    _native_save()
     return kind, reason
 
 
 def native_cached(game: Game) -> tuple[str, str] | None:
     """Cached detection result, or None while it is computed in the background."""
     exe = installdate._main_exe(game)
+    _native_load()
     cached = _native_cache.get(game.id)
     if cached and exe is not None and cached[0] == str(exe.parent):
         return cached[1], cached[2]
@@ -836,7 +871,7 @@ def native_cached(game: Game) -> tuple[str, str] | None:
 
         async def compute():
             try:
-                await asyncio.get_running_loop().run_in_executor(None, detect_native, game)
+                await asyncio.get_running_loop().run_in_executor(_native_pool, detect_native, game)
             finally:
                 _native_pending.discard(game.id)
         with contextlib.suppress(Exception):
@@ -844,12 +879,20 @@ def native_cached(game: Game) -> tuple[str, str] | None:
     return None
 
 
+_engine_cache: dict[int, tuple[float, str]] = {}
+
+
 def engine_of(game: Game) -> str:
     engine = installdate.local_engine(game)
     if not engine:
+        # engine not recognised by the local scan: looked for again at most once a minute (Toy column, every frame)
+        cached = _engine_cache.get(game.id)
+        if cached and time.monotonic() - cached[0] < 60:
+            return cached[1]
         exe = installdate._main_exe(game)
         if exe is not None:
             engine = installdate.detect_engine(exe)[0]
+        _engine_cache[game.id] = (time.monotonic(), engine)
     return engine
 
 
@@ -883,11 +926,15 @@ _count_cache: dict[int, tuple[float, int]] = {}
 
 
 def script_count(game_id: int) -> int:
+    """Toy column, every frame: counted again at most once a minute (some games have 1000+ scripts;
+    the generator and Import clear the cache when they add some)."""
     cached = _count_cache.get(game_id)
-    if cached and time.monotonic() - cached[0] < 10:
+    if cached and time.monotonic() - cached[0] < 60:
         return cached[1]
-    folder = scripts_dir(game_id)
-    count = sum(1 for _ in folder.glob("*.funscript")) if folder.is_dir() else 0
+    count = 0
+    with contextlib.suppress(OSError):
+        with os.scandir(scripts_dir(game_id)) as it:
+            count = sum(1 for entry in it if entry.name.endswith(".funscript"))
     _count_cache[game_id] = (time.monotonic(), count)
     return count
 
