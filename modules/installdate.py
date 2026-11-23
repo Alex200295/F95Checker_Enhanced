@@ -65,7 +65,7 @@ LOG_PREFIX = "[LocalScan]"
 EXCLUDED_DIRS = {
     "saves", "save", "savedata", "cache", "logs", "log", "__pycache__", "screenshots", "crashes", "temp", "tmp",
     # added next to games by F95Checker / graphics mods, not by a game update
-    "reshade-shaders", "_f95checker_dlss5", "_disabled_mods", "_f95checker_old_engine",
+    "reshade-shaders", "_f95checker_dlss5", "_disabled_mods", "_f95checker_old_engine", "_f95checker_mod_backup",
 }
 EXCLUDED_FILES = {
     "log.txt", "traceback.txt", "errors.txt", "persistent", "output_log.txt", "player.log", "player-prev.log",
@@ -264,8 +264,9 @@ def external_play_time(exe: pathlib.Path) -> int:
     return best
 
 
-def probe_folder(root: pathlib.Path, max_depth: int = PROBE_MAX_DEPTH) -> Probe:
-    """Install date + last played date of a game folder (or single-file game), from its files."""
+def probe_folder(root: pathlib.Path, max_depth: int = PROBE_MAX_DEPTH, skip: frozenset = frozenset()) -> Probe:
+    """Install date + last played date of a game folder (or single-file game), from its files.
+    skip: normcase'd paths ignored (mods installed by F95Checker: installing one is not a game update)."""
     limit = time.time() + 86400  # Ignore future dates (badly dated archives)
     best = 0.0
     best_file = None
@@ -319,6 +320,8 @@ def probe_folder(root: pathlib.Path, max_depth: int = PROBE_MAX_DEPTH) -> Probe:
                             played = mtime
                         continue
                     if name in EXCLUDED_FILES or os.path.splitext(name)[1] in EXCLUDED_EXTS or SCREENSHOT_RE.match(name):
+                        continue
+                    if skip and os.path.normcase(entry.path) in skip:
                         continue
                     scanned += 1
                     consider(entry.path, entry.stat(follow_symlinks=False))
@@ -720,7 +723,7 @@ async def _scan_game(game: Game, lib: Library, base: pathlib.Path | None, manual
         report.old_versions.append(OldVersion(game.name, old_folder, res.target, kind))
 
     # 2. Installed checkbox
-    probe = await loop.run_in_executor(None, probe_folder, res.target)
+    probe = await loop.run_in_executor(None, probe_folder, res.target, PROBE_MAX_DEPTH, installed_mod_paths(game, res.executable))
     files_ts = probe.installed
     # Size on disk (Size column): only recomputed when the folder or its files changed
     info = local_info().setdefault(game.id, {})
@@ -1820,6 +1823,21 @@ def fix_engine_conflicts(exe: pathlib.Path) -> list[str]:
             except OSError as exc:
                 _log(f"Engine conflict not fixed {src}: {exc}")
     return fixed
+
+
+def installed_mod_paths(game: Game, exe: pathlib.Path | None = None) -> frozenset:
+    """Files added by "Install mod" (and the .rpyc Ren'Py compiles from their .rpy), normcase'd absolute paths."""
+    exe = exe or _main_exe(game)
+    mods = local_info().get(game.id, {}).get("mods_installed") or []
+    if exe is None or not mods:
+        return frozenset()
+    out = set()
+    for mod in mods:
+        for rel in mod.get("files", []):
+            out.add(os.path.normcase(str(exe.parent / rel)))
+            if rel.lower().endswith(".rpy"):
+                out.add(os.path.normcase(str(exe.parent / (rel + "c"))))
+    return frozenset(out)
 
 
 UNIVERSAL_MOD_RE = re.compile(r"urm|universal|0x52|unren|console", re.IGNORECASE)   # work with any version

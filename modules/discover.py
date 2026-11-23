@@ -384,13 +384,18 @@ def open_mods_popup(games: list[Game] = None):
                        "search \"<game> mod\" on F95zone for those.)")
             return
         imgui.text_disabled("Links from the download section of each thread (Extras, mods, patches, walkthroughs).\n"
-                            "Mods go into the game's \"game\" folder (Ren'Py). Back up your saves before installing a mod.")
+                            "Download one, then \"Install a mod...\" next to the game: from the archive or the extracted folder,\n"
+                            "F95Checker puts the files in the right place, backs up your saves and can uninstall it.")
         _, show_installed[0] = imgui.checkbox("Show the ones that look installed", show_installed[0])
         for game, mods in found:
             visible = [m for m in mods if show_installed[0] or not m.installed]
             if not visible:
                 continue
             imgui.text(game.name)
+            imgui.same_line()
+            if imgui.small_button(f"{icons.puzzle_plus_outline} Install a mod...###mod_install_{game.id}"):
+                from modules import importupdate
+                importupdate.install_mod(game)
             for i, mod in enumerate(visible):
                 imgui.text("   ")
                 imgui.same_line()
@@ -428,7 +433,7 @@ async def send_mod_to_jdownloader(mod: ModLink):
         loop = asyncio.get_running_loop()
         if await loop.run_in_executor(None, installdate.send_to_jdownloader, link, game.url):
             utils.push_popup(msgbox.msgbox, "Mod", f"{game.name} - {mod.label}: sent to JDownloader.\n"
-                             "Once extracted, copy its files into the game folder (usually <game>\\game).", MsgBox.info)
+                             "Once downloaded: right click the game > Install a mod... (archive or extracted folder).", MsgBox.info)
         else:
             callbacks.clipboard_copy(link)
             utils.push_popup(msgbox.msgbox, "Mod", "JDownloader is not running: the link was copied to the clipboard.", MsgBox.warn)

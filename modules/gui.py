@@ -1885,6 +1885,13 @@ class MainGUI():
         pctools.draw_context_menu(game)
         if game and imgui.selectable(f"{icons.puzzle_outline} Mods & Extras", False)[0]:
             discover.open_mods_popup([game])
+        if game and imgui.selectable(f"{icons.puzzle_plus_outline} Install a mod...", False)[0]:
+            importupdate.install_mod(game)
+        self.draw_hover_text("From the downloaded archive or the folder you extracted: F95Checker puts its files in the\n"
+                             "right place (game folder for Ren'Py), backs up your saves, and can uninstall it later.", text=None)
+        if game and (mods_in := importupdate.installed_mods(game)):
+            if imgui.selectable(f"{icons.puzzle_remove_outline} Installed mods ({len(mods_in)})", False)[0]:
+                importupdate.open_installed_mods_popup(game)
         if game and (old_mods := installdate.outdated_mods_of(game)):
             if imgui.selectable(f"{icons.alert_outline} Mods older than this version ({len(old_mods)})", False)[0]:
                 installdate.open_outdated_mods_popup([game])

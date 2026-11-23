@@ -19,6 +19,7 @@ Import Update: install a downloaded update archive (.zip / .7z / .rar) into a ga
 Files present in the game but not in the archive are kept (like extracting over it by hand).
 """
 import asyncio
+import contextlib
 import dataclasses
 import os
 import pathlib
@@ -280,7 +281,7 @@ def _locked(path: pathlib.Path) -> bool:
         return False
 
 
-def _backup_saves(plan: Plan) -> pathlib.Path | None:
+def _backup_saves(plan: Plan, label: str = "before import") -> pathlib.Path | None:
     save_dirs = []
     for current, dirs, _ in os.walk(plan.dest):
         depth = len(pathlib.Path(current).relative_to(plan.dest).parts)
@@ -293,7 +294,11 @@ def _backup_saves(plan: Plan) -> pathlib.Path | None:
     save_dirs = [d for d in save_dirs if any(d.iterdir())]
     if not save_dirs:
         return None
-    target = globals.data_path / "saves_backup" / f"{utils.clean_str(plan.game.name)[:40]} - before import - {time.strftime('%Y%m%d-%H%M%S')}"
+    target = globals.data_path / "saves_backup" / f"{utils.clean_str(plan.game.name)[:40]} - {label} - {time.strftime('%Y%m%d-%H%M%S')}"
+    n = 2
+    while target.exists():                  # two in the same second
+        target = target.with_name(f"{target.name.split(' (')[0]} ({n})")
+        n += 1
     for d in save_dirs:
         shutil.copytree(d, target / d.relative_to(plan.dest))
     return target
@@ -559,3 +564,339 @@ def _open_progress(plan: Plan, job: Job):
         imgui.text_disabled("Don't start the game until it's finished.")
 
     utils.push_popup(utils.popup, "Importing update", content, buttons=None, closable=False, outside=False)
+
+
+# ---------------------------------------------------------------------------
+# Install a mod (right click > Mods & Extras, or the Install button of the mods list)
+# ---------------------------------------------------------------------------
+#  - From the downloaded archive or from the folder you extracted (Downloads...): the files are copied,
+#    the extracted folder is left as it is.
+#  - Where they go: like the archive says when it holds a "game" folder (or the game's exe); else, for a
+#    Ren'Py game, into <game>\game (a wrapper folder named like the release, "WT-Mod-1.2", is skipped).
+#  - Saves are backed up first; game files the mod replaces are moved to <game>\_f95checker_mod_backup\<id>
+#    and put back by Uninstall, which also deletes the mod's files (and the .rpyc Ren'Py compiled from them).
+#  - Nothing else changes: version, Installed, install date (mod files are ignored by the local scan), folder name.
+
+MOD_BACKUP_DIR = "_f95checker_mod_backup"
+SCRIPT_EXTS = (".rpy", ".rpyc", ".rpa", ".py")
+
+
+@dataclasses.dataclass(slots=True)
+class ModPlan:
+    game: Game
+    source: pathlib.Path                # archive, or extracted folder
+    exe: pathlib.Path
+    root: pathlib.Path                  # game folder (folder of the exe): paths in the manifest are relative to it
+    target: pathlib.Path                # where the source folder <prefix> goes
+    prefix: str                         # source folder used ("" = everything), ends with "/"
+    files: dict[str, int]               # source names (all of them) -> size
+    how: str = ""
+    wrapper: str = ""                   # single top folder that may be skipped (Ren'Py, no game/ folder)
+    skip_wrapper: bool = False
+    name: str = ""
+    free: int = 0
+
+    def used(self) -> dict[str, int]:
+        prefix = self.prefix + (self.wrapper if self.skip_wrapper else "")
+        return {n[len(prefix):]: s for n, s in self.files.items() if n.startswith(prefix) and n[len(prefix):]}
+
+    def counts(self) -> tuple[int, int, int]:
+        used = self.used()
+        replaced = sum(1 for n in used if (self.target / n).exists())
+        return replaced, len(used) - replaced, sum(used.values())
+
+
+def list_folder(path: pathlib.Path) -> dict[str, int]:
+    files = {}
+    for current, _, names in os.walk(path):
+        for name in names:
+            full = pathlib.Path(current) / name
+            with contextlib.suppress(OSError):
+                files[full.relative_to(path).as_posix()] = full.stat().st_size
+    return files
+
+
+def make_mod_plan(game: Game, source: pathlib.Path) -> ModPlan:
+    exe = installdate._main_exe(game)
+    if exe is None:
+        raise ValueError(f"The executable of {game.name} is not set or not found: Add Exe first (or run a local scan).")
+    files = list_folder(source) if source.is_dir() else list_archive(source)
+    if not files:
+        raise ValueError("Nothing to install: no file in it.")
+    root = exe.parent
+    renpy = (root / "renpy").is_dir() and (root / "game").is_dir()
+    name = source.name if source.is_dir() else source.stem
+    plan = ModPlan(game, source, exe, root, root, "", files, name=name, free=installdate.free_space(root))
+    prefix, how = find_prefix(list(files), exe)
+    if how.startswith("contains"):                       # the mod has the game's layout (game/, the exe...)
+        plan.prefix, plan.how = prefix, how
+    elif renpy:
+        plan.target, plan.how = root / "game", "Ren'Py mod without a game folder: goes into game"
+        top = _common_root(list(files))
+        if top and not (root / "game" / top.rstrip("/")).is_dir():
+            plan.wrapper = top
+            name_top = top.rstrip("/")
+            # a release folder ("WT-Mod-v1.2", "BeingADIK-0.11.1-mod") is a wrapper; a plain name may be meant inside game
+            plan.skip_wrapper = bool(installdate.version_tuple(name_top)) or \
+                installdate.folder_key(name_top) == installdate.folder_key(root.name)
+    else:
+        plan.prefix, plan.how = prefix, how
+    return plan
+
+
+def _install_mod(plan: ModPlan, job: Job) -> str:
+    """Blocking part (worker thread). Returns the summary text."""
+    staging = None
+    try:
+        if plan.source.is_dir():
+            base = plan.source
+        else:
+            staging = plan.root.parent / f".f95checker-mod-{plan.game.id}-{int(time.time())}"
+            staging.mkdir()
+            job.phase = "Extracting (the game is not touched yet)..."
+            extract_archive(plan.source, staging, job)
+            base = staging
+        prefix = plan.prefix + (plan.wrapper if plan.skip_wrapper else "")
+        source = base / prefix if prefix else base
+        pairs = []
+        for current, _, names in os.walk(source):
+            for name in names:
+                src = pathlib.Path(current) / name
+                pairs.append((src, plan.target / src.relative_to(source)))
+        if not pairs:
+            raise ValueError("Nothing to install.")
+        job.phase = "Checking the game files are not in use..."
+        locked = [dst for _, dst in pairs if dst.is_file() and _locked(dst)]
+        if locked:
+            raise PermissionError(f"{len(locked)} file(s) are in use (is the game running?), e.g. {locked[0]}. Nothing was changed.")
+        job.phase = "Backing up saves..."
+        import types
+        saves = _backup_saves(types.SimpleNamespace(dest=plan.root, game=plan.game), "before mod")
+        mod_id = int(time.time() * 1000)
+        backup = plan.root / MOD_BACKUP_DIR / str(mod_id)
+        wanted = {os.path.normcase(str(dst)) for _, dst in pairs}
+        to_set_aside = [dst for _, dst in pairs if dst.is_file()]
+        # Ren'Py compiles the mod's x.rpy over the game's own x.rpyc: keep the original for Uninstall
+        for _, dst in pairs:
+            if dst.suffix.lower() == ".rpy":
+                compiled = dst.with_suffix(".rpyc")
+                if compiled.is_file() and os.path.normcase(str(compiled)) not in wanted:
+                    to_set_aside.append(compiled)
+        job.phase = "Installing the files..."
+        job.done, job.total = 0, len(pairs)
+        replaced = []
+        for dst in to_set_aside:
+            rel = dst.relative_to(plan.root)
+            (backup / rel).parent.mkdir(parents=True, exist_ok=True)
+            os.replace(dst, backup / rel)
+            replaced.append(rel.as_posix())
+        for src, dst in pairs:
+            if dst.is_dir():
+                raise IsADirectoryError(f"{dst} is a folder in the game but a file in the mod")
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if staging is not None:
+                os.replace(src, dst)        # extracted on the same drive: instant
+            else:
+                shutil.copy2(src, dst)      # your extracted folder stays as it is
+            job.done += 1
+        info = installdate.local_info().setdefault(plan.game.id, {})
+        info.setdefault("mods_installed", []).append({
+            "id": mod_id, "name": plan.name, "source": str(plan.source), "date": int(time.time()),
+            "files": [dst.relative_to(plan.root).as_posix() for _, dst in pairs], "replaced": replaced,
+        })
+        installdate.save_local_info()
+    finally:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
+    lines = [f"{len(pairs)} file(s) installed into {plan.target}"
+             + (f", {len(replaced)} game file(s) replaced (kept for Uninstall)." if replaced else ".")]
+    if saves:
+        lines.append(f"Saves backed up to {saves}.")
+    lines.append("Launch the game: if it shows an error at start, the mod does not fit this version: right click > "
+                 "Mods & Extras > Installed mods > Uninstall.")
+    return "\n".join(lines)
+
+
+def uninstall_mod(game: Game, mod_id: int) -> str:
+    """Deletes the mod's files (and their compiled .rpyc), puts back the game files it replaced. '' or an error."""
+    exe = installdate._main_exe(game)
+    info = installdate.local_info().get(game.id, {})
+    mods = info.get("mods_installed") or []
+    mod = next((m for m in mods if m.get("id") == mod_id), None)
+    if exe is None or mod is None:
+        return "mod or game folder not found"
+    root = exe.parent
+    if game.launch_state is not LaunchState.Idle:
+        return f"{game.name} is running: close it first"
+    later = [m for m in mods if m.get("id", 0) > mod_id and set(m.get("files", [])) & set(mod.get("files", []))]
+    if later:
+        return f"\"{later[0].get('name')}\" was installed after it over some of the same files: uninstall it first"
+    errors = []
+    dirs = set()
+    restored = {r.lower() for r in mod.get("replaced", [])}
+    for rel in mod.get("files", []):
+        targets = [rel] + ([rel + "c"] if rel.lower().endswith(".rpy") and (rel + "c").lower() not in restored else [])
+        for item in targets:
+            path = root / item
+            try:
+                if path.is_file():
+                    path.unlink()
+                dirs.add(path.parent)
+            except OSError as exc:
+                errors.append(f"{item}: {exc}")
+    backup = root / MOD_BACKUP_DIR / str(mod_id)
+    for rel in mod.get("replaced", []):
+        try:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            os.replace(backup / rel, root / rel)
+        except OSError as exc:
+            errors.append(f"restore {rel}: {exc}")
+    for d in sorted(dirs, key=lambda p: len(p.parts), reverse=True):      # folders the mod created, if now empty
+        with contextlib.suppress(OSError):
+            while d != root and d != root / "game" and not any(d.iterdir()):
+                d.rmdir()
+                d = d.parent
+    if not errors:
+        shutil.rmtree(backup, ignore_errors=True)
+        with contextlib.suppress(OSError):
+            (root / MOD_BACKUP_DIR).rmdir()
+        info["mods_installed"] = [m for m in mods if m.get("id") != mod_id]
+        installdate.save_local_info()
+        _log(f"'{game.name}': mod {mod.get('name')} uninstalled")
+        return ""
+    return "\n".join(errors[:10])
+
+
+def installed_mods(game: Game) -> list[dict]:
+    return list(installdate.local_info().get(game.id, {}).get("mods_installed") or [])
+
+
+def install_mod(game: Game):
+    """Entry point: archive or extracted folder."""
+    import imgui
+    if game.launch_state is not LaunchState.Idle:
+        utils.push_popup(msgbox.msgbox, "Install mod", f"{game.name} is running: close it first.", MsgBox.warn)
+        return
+    if installdate._main_exe(game) is None:
+        utils.push_popup(msgbox.msgbox, "Install mod", f"The executable of {game.name} is not set or not found.\n"
+                         "Add Exe (or Local scan) first, so F95Checker knows where the game is.", MsgBox.warn)
+        return
+
+    def pick(folder: bool):
+        from external import filepicker
+
+        def picked(selected):
+            if not selected:
+                return
+            path = pathlib.Path(selected)
+            if not folder and path.suffix.lower() not in ARCHIVE_EXTS:
+                utils.push_popup(msgbox.msgbox, "Install mod", f"{path.name}: choose a .zip, .7z or .rar archive.", MsgBox.warn)
+                return
+            async_thread.run(_prepare_mod(game, path))
+
+        picker = filepicker.FilePicker(
+            title=(f"Select the extracted mod folder for {game.name}" if folder else
+                   f"Select or drop the mod archive (.zip / .7z / .rar) for {game.name}"),
+            start_dir=pathlib.Path.home() / "Downloads" if (pathlib.Path.home() / "Downloads").is_dir() else _start_dir(game),
+            dir_picker=folder,
+            callback=picked,
+        )
+        utils.push_popup(picker.tick)
+
+    def content():
+        imgui.text(f"Install a mod into {game.name}: from the downloaded archive, or from the folder you extracted.")
+
+    utils.push_popup(utils.popup, "Install mod", content,
+                     buttons={f"{icons.archive_outline} Archive (.zip / .7z / .rar)": lambda: pick(False),
+                              f"{icons.folder_outline} Extracted folder": lambda: pick(True),
+                              f"{icons.cancel} Cancel": None},
+                     closable=True, outside=False)
+
+
+async def _prepare_mod(game: Game, path: pathlib.Path):
+    try:
+        plan = await asyncio.get_running_loop().run_in_executor(None, make_mod_plan, game, path)
+    except Exception:
+        utils.push_popup(msgbox.msgbox, "Install mod", f"Cannot read {path.name}:\n{error.text()}", MsgBox.error, more=error.traceback())
+        return
+    _open_mod_preview(plan)
+
+
+def _open_mod_preview(plan: ModPlan):
+    import imgui
+
+    def content():
+        replaced, added, size = plan.counts()
+        imgui.text(f"{plan.game.name}: {plan.name}")
+        imgui.text(f"Files go into: {plan.target}")
+        imgui.text_disabled(f"({plan.how}{', mod folder used: ' + plan.prefix if plan.prefix else ''})")
+        if plan.wrapper:
+            _, plan.skip_wrapper = imgui.checkbox(
+                f"Put the content of \"{plan.wrapper.rstrip('/')}\" directly in game (unticked: the folder itself goes into game)",
+                plan.skip_wrapper)
+        imgui.text(f"{added + replaced} files, {installdate.size_display(size)}: {added} new, {replaced} replacing game files "
+                   "(kept aside, put back by Uninstall).")
+        if plan.free and plan.free < size * 1.05:
+            imgui.text_colored(f"Not enough space: {installdate.size_display(plan.free)} free on {plan.root.anchor}.", 0.95, 0.3, 0.2)
+        names = sorted(plan.used())
+        imgui.text_disabled("\n".join(names[:12]) + (f"\n... and {len(names) - 12} more" if len(names) > 12 else ""))
+        imgui.text_disabled("Check the mod is made for your version of the game. Saves are backed up first.")
+
+    def start():
+        _, _, size = plan.counts()
+        if plan.free and plan.free < size * 1.05:
+            utils.push_popup(msgbox.msgbox, "Install mod", "Not enough free space on the game's drive.", MsgBox.error)
+            return
+        job = Job()
+
+        async def run():
+            try:
+                job.result = await asyncio.get_running_loop().run_in_executor(None, _install_mod, plan, job)
+                _log(f"'{plan.game.name}': mod {plan.name}: {job.result!r}")
+            except Exception:
+                job.failed = True
+                job.result = f"Install failed (the game was not changed):\n{error.text()}"
+                _log(error.traceback())
+            finally:
+                job.finished = True
+
+        async_thread.run(run())
+
+        def progress():
+            if job.finished:
+                utils.push_popup(msgbox.msgbox, "Install mod", f"{plan.game.name} - {plan.name}\n\n{job.result}",
+                                 MsgBox.error if job.failed else MsgBox.info)
+                return True
+            imgui.text(f"{plan.game.name}: {job.phase}")
+            if job.total:
+                imgui.text(f"{job.done} / {job.total}")
+
+        utils.push_popup(utils.popup, "Installing mod", progress, buttons=None, closable=False, outside=False)
+
+    utils.push_popup(utils.popup, "Install mod", content,
+                     buttons={f"{icons.archive_arrow_down_outline} Install": start, f"{icons.cancel} Cancel": None},
+                     closable=True, outside=False)
+
+
+def open_installed_mods_popup(game: Game):
+    import imgui
+    state = {"msg": ""}
+
+    def content():
+        mods = installed_mods(game)
+        if not mods:
+            imgui.text("No mod installed with F95Checker in this game.")
+            return
+        imgui.text_disabled("Uninstall deletes the mod's files and puts back the game files it replaced.")
+        for mod in sorted(mods, key=lambda m: m.get("id", 0), reverse=True):
+            imgui.separator()
+            imgui.text(f"{mod.get('name')}   ({time.strftime('%Y-%m-%d', time.localtime(mod.get('date', 0)))}, "
+                       f"{len(mod.get('files', []))} files, {len(mod.get('replaced', []))} replaced)")
+            imgui.same_line()
+            if imgui.small_button(f"Uninstall###mod_un_{mod.get('id')}"):
+                err = uninstall_mod(game, mod.get("id"))
+                state["msg"] = f"Uninstalled: {mod.get('name')}" if not err else f"Not uninstalled: {err}"
+        if state["msg"]:
+            imgui.text_disabled(state["msg"])
+
+    utils.push_popup(utils.popup, f"Installed mods - {game.name}", content, buttons=True, closable=True, outside=False)
