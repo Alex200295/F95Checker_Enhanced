@@ -1,6 +1,6 @@
 # F95Checker Enhanced
 
-**[Français](README.fr.md)** · **[User guide](docs/USER_GUIDE.md)** · **[Patch notes](CHANGELOG.md)** · **[Third-party notices](THIRD_PARTY_NOTICES.md)**
+**[Français](README.fr.md)** · **[User guide](docs/USER_GUIDE.md)** · **[Patch notes](CHANGELOG.md)** · **[Third-party notices](THIRD_PARTY_NOTICES.md)** · **[☕ Ko-fi](https://ko-fi.com/alex200295)**
 
 A fork of **[F95Checker](https://github.com/WillyJL/F95Checker) by WillyJL** (version 11.2.1) that turns it into a full
 manager for the games **installed on your PC**: it finds them on your drives, tells you which ones really need an update,
@@ -66,6 +66,7 @@ Full list: **[patch notes](CHANGELOG.md)**. How to use each feature: **[user gui
   original project: https://linktr.ee/WillyJL. **Do not report bugs of the Enhanced features to WillyJL**: open an issue
   here instead.
 - F95Checker Enhanced: fork by **Alex200295**, same license, **GPLv3** (`LICENSE`).
+  Like the Enhanced features? You can support them on **[Ko-fi](https://ko-fi.com/alex200295)** ☕ — free, optional, nothing is locked.
 - Bundled tools and their licenses: **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)** (Real-ESRGAN, RIFE, FFmpeg,
   Depth Anything V2 Small, ONNX Runtime).
 - Not affiliated with F95zone.
