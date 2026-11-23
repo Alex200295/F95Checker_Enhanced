@@ -1362,6 +1362,8 @@ async def check_updates():
             res = await fetch("GET", app_update_beta_runs, headers={"Accept": "application/vnd.github+json"})
             res = json.loads(res)
             globals.last_update_check = time.time()
+            if not res.get("workflow_runs"):
+                return  # F95Checker Enhanced: no successful build on the fork yet
             run = res["workflow_runs"][0]
             latest_name = f"{run['run_number']}"
             update_available = run["run_number"] > globals.build_number
@@ -1382,6 +1384,8 @@ async def check_updates():
             res = await fetch("GET", app_update_stable_latest, headers={"Accept": "application/vnd.github+json"})
             res = json.loads(res)
             globals.last_update_check = time.time()
+            if res.get("message") == "Not Found":
+                return  # F95Checker Enhanced: no release published on the fork yet, nothing to update to
             if "tag_name" not in res:
                 utils.push_popup(
                     msgbox.msgbox, "Update check error",

@@ -457,15 +457,16 @@ def _ago(timestamp: float) -> str:
     return "today" if days <= 0 else "yesterday" if days == 1 else f"{days} days ago"
 
 
-def draw_hero(gui, ids: list[int]):
-    """Wide banner of the installed game of this tab you played last, with Play / Details."""
+def draw_hero(gui, ids: list[int], corner=None) -> bool:
+    """Wide banner of the installed game of this tab you played last, with Play / Details.
+    corner(right, top): draws a button in the top right corner of the banner. False when there is no banner."""
     import imgui
     if not prefs()["hero"]:
-        return
+        return False
     games = [globals.games[i] for i in ids if i in globals.games]
     games = [g for g in games if g.installed and g.last_launched.value]
     if not games:
-        return
+        return False
     game = max(games, key=lambda g: g.last_launched.value)
     width = imgui.get_content_region_available_width()
     height = gui.scaled(150)
@@ -517,7 +518,10 @@ def draw_hero(gui, ids: list[int]):
     if imgui.button(f"{icons.information_outline} Details###hero_info"):
         utils.push_popup(gui.draw_game_info_popup, game, None)
     imgui.end_group()
+    if corner:
+        corner(x + width - pad, y + pad)
     if image_hovered and imgui.is_mouse_clicked(imgui.MOUSE_BUTTON_LEFT) and not imgui.is_any_item_hovered():
         utils.push_popup(gui.draw_game_info_popup, game, None)
     imgui.set_cursor_screen_pos((x, y + height))
     imgui.dummy(width, gui.scaled(6))
+    return True

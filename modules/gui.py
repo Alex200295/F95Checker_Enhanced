@@ -90,6 +90,7 @@ from modules import (
 tool_page         = api.f95_threads_page + "44173/"
 github_page       = "https://github.com/Alex200295/F95Checker_Enhanced"  # fork (original: github.com/WillyJL/F95Checker)
 developer_page    = "https://linktr.ee/WillyJL"
+enhanced_donate_page = "https://ko-fi.com/alex200295"  # F95Checker Enhanced: your donation page (Ko-fi, PayPal.me...); empty = no button
 
 imgui.io = None
 imgui.style = None
@@ -716,6 +717,11 @@ class MainGUI():
             imgui.style.window_rounding = \
             imgui.style.scrollbar_rounding = \
         self.scaled(globals.settings.style_corner_radius)
+        # F95Checker Enhanced: wider scrollbars, easier to see and grab
+        imgui.style.scrollbar_size = self.scaled(16)
+        imgui.style.grab_min_size = self.scaled(28)
+        imgui.style.colors[imgui.COLOR_SCROLLBAR_GRAB] = (*globals.settings.style_accent[:3], 0.45)
+        imgui.style.colors[imgui.COLOR_SCROLLBAR_GRAB_HOVERED] = (*globals.settings.style_accent[:3], 0.75)
         _ = \
             imgui.style.colors[imgui.COLOR_TEXT] = \
         globals.settings.style_text
@@ -1099,6 +1105,12 @@ class MainGUI():
                                 text = self.watermark_text
                             _3 = self.scaled(3)
                             _6 = self.scaled(6)
+                            if text == self.watermark_text:
+                                # F95Checker Enhanced: shorter text when the full one is wider than the sidebar
+                                for candidate in (text, f"F95Checker {globals.version_name}", f"{globals.version_name}"):
+                                    text = candidate
+                                    if imgui.calc_text_size(text).x <= sidebar_size - _6 * 2:
+                                        break
                             text_size = imgui.calc_text_size(text)
                             text_x = size.x - text_size.x - _6
                             text_y = size.y - text_size.y - _6
@@ -3290,7 +3302,8 @@ class MainGUI():
             imgui.end_group()
             imgui.spacing()
             width = imgui.get_content_region_available_width()
-            btn_width = (width - 2 * imgui.style.item_spacing.x) / 3
+            btn_count = 4 if enhanced_donate_page else 3
+            btn_width = (width - (btn_count - 1) * imgui.style.item_spacing.x) / btn_count
             if imgui.button(f"{icons.open_in_new} F95zone Thread", width=btn_width):
                 callbacks.open_webpage(tool_page)
             imgui.same_line()
@@ -3299,6 +3312,10 @@ class MainGUI():
             imgui.same_line()
             if imgui.button(f"{icons.link_variant} Donate + Links", width=btn_width):
                 callbacks.open_webpage(developer_page)
+            if enhanced_donate_page:
+                imgui.same_line()
+                if imgui.button(f"{icons.heart} Support Enhanced", width=btn_width):
+                    callbacks.open_webpage(enhanced_donate_page)
             imgui.spacing()
             imgui.spacing()
             imgui.push_text_wrap_pos(width)
@@ -3824,9 +3841,7 @@ class MainGUI():
 
             # Column headers
             imgui.table_next_row(imgui.TABLE_ROW_HEADERS)
-            for column in cols.items:
-                imgui.table_set_column_index(column.index)
-                imgui.table_header(column.header)
+            self.draw_column_headers(table_id)
 
             # Loop rows
             self.sync_scroll()
@@ -3980,6 +3995,11 @@ class MainGUI():
         imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() - offset)
         pos_y = imgui.get_cursor_pos_y()
         header_h = imgui.get_text_line_height_with_spacing() if globals.settings.table_header_outside_list else 1
+        if globals.settings.table_header_outside_list:
+            # F95Checker Enhanced: taller, easier to read sort bar
+            pad_y = self.scaled(7)
+            imgui.push_style_var(imgui.STYLE_CELL_PADDING, (imgui.style.cell_padding.x, pad_y))
+            header_h = imgui.get_text_line_height() + pad_y * 2 + self.scaled(1)
         if imgui.begin_table(
             table_id,
             column=cols.count,
@@ -4004,13 +4024,32 @@ class MainGUI():
             if globals.settings.table_header_outside_list:
                 # Column headers
                 imgui.table_next_row(imgui.TABLE_ROW_HEADERS)
-                for column in cols.items:
-                    imgui.table_set_column_index(column.index)
-                    imgui.table_header(column.header)
+                self.draw_column_headers(table_id)
 
             imgui.end_table()
-        if not globals.settings.table_header_outside_list:
+        if globals.settings.table_header_outside_list:
+            imgui.pop_style_var()
+            # F95Checker Enhanced: accent line under the sort bar
+            x, y = imgui.get_cursor_screen_pos()
+            imgui.get_window_draw_list().add_line(
+                x + offset, y - self.scaled(1), x + imgui.get_content_region_available_width(), y - self.scaled(1),
+                imgui.get_color_u32_rgba(*globals.settings.style_accent[:3], 0.55), self.scaled(1.5)
+            )
+            imgui.dummy(0, self.scaled(4))
+        else:
             imgui.set_cursor_pos_y(pos_y + header_h)
+
+    def draw_column_headers(self, table_id: str):
+        # F95Checker Enhanced: the column(s) the games are sorted by are written in the accent colour
+        sorted_columns = {sort.index for sort in self.sorts.get(table_id, [])}
+        for column in cols.items:
+            imgui.table_set_column_index(column.index)
+            if column.index in sorted_columns:
+                imgui.push_style_color(imgui.COLOR_TEXT, *globals.settings.style_accent)
+                imgui.table_header(column.header)
+                imgui.pop_style_color()
+            else:
+                imgui.table_header(column.header)
 
     def get_game_cell_config(self):
         side_indent = imgui.style.item_spacing.x * 2
@@ -4282,6 +4321,29 @@ class MainGUI():
             imgui.dummy(cell_width, cell_height)
         draw_list.channels_merge()
 
+    def draw_tonight_button(self, right: float = None, top: float = None):
+        # F95Checker Enhanced: pill button in the accent colour (top right of the Continue banner when given)
+        accent = globals.settings.style_accent
+        label = f"{icons.dice_multiple}  What to play tonight?###tonight_grid"
+        pad_x, pad_y = self.scaled(14), self.scaled(7)
+        if right is not None:
+            width = imgui.calc_text_size(label.split("###")[0]).x + pad_x * 2
+            imgui.set_cursor_screen_pos((right - width, top))
+        imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (pad_x, pad_y))
+        imgui.push_style_var(imgui.STYLE_FRAME_ROUNDING, imgui.get_text_line_height() / 2 + pad_y)
+        imgui.push_style_var(imgui.STYLE_FRAME_BORDERSIZE, self.scaled(1.5))
+        imgui.push_style_color(imgui.COLOR_BUTTON, *accent[:3], 0.85)
+        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *accent[:3], 1.0)
+        imgui.push_style_color(imgui.COLOR_BUTTON_ACTIVE, *accent[:3], 0.7)
+        imgui.push_style_color(imgui.COLOR_BORDER, 1.0, 1.0, 1.0, 0.25)
+        imgui.push_style_color(imgui.COLOR_TEXT, 1.0, 1.0, 1.0, 1.0)
+        if imgui.button(label):
+            extras.open_tonight_popup()
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("One of your installed, unfinished games, drawn by your tastes")
+        imgui.pop_style_color(5)
+        imgui.pop_style_var(3)
+
     def draw_games_grid(self):
         # Configure table
         self.tick_list_columns()
@@ -4293,9 +4355,10 @@ class MainGUI():
             column_count -= 1
         expand = cell_width > min_expand_width
         img_height = cell_width / globals.settings.cell_image_ratio
-        if imgui.small_button(f"{icons.dice_multiple} What to play tonight?###tonight_grid"):
-            extras.open_tonight_popup()
-        visuals.draw_hero(self, self.show_games_ids[self.current_tab])
+        # F95Checker Enhanced: "What to play tonight?" on the Continue banner, or alone above the grid
+        if not visuals.draw_hero(self, self.show_games_ids[self.current_tab], corner=self.draw_tonight_button):
+            self.draw_tonight_button()
+            imgui.dummy(0, self.scaled(4))
         showcase.draw_shelf(self, self.show_games_ids[self.current_tab])
         imgui.push_style_var(imgui.STYLE_CELL_PADDING, (padding, padding))
         if imgui.begin_table(

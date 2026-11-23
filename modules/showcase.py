@@ -155,6 +155,58 @@ def draw_badge(game: Game, x: float, y: float, w: float, scale: float):
     draw_list.add_text(x1 + pad, y1 + pad / 2, imgui.get_color_u32_rgba(1, 1, 1, 1), text)
 
 
+def _shelf_header(gui, opened: bool, count: int) -> bool:
+    """Section title of the shelf: chevron, bold "To play", count in an accent pill, dim explanation, accent line.
+    The whole row is the open / close button. True when clicked."""
+    import imgui
+    accent = globals.settings.style_accent
+    draw_list = imgui.get_window_draw_list()
+    x, y = imgui.get_cursor_screen_pos()
+    width = imgui.get_content_region_available_width()
+    imgui.push_font(imgui.fonts.bold)
+    title_size = imgui.calc_text_size("To play")
+    imgui.pop_font()
+    pad = gui.scaled(6)
+    row_h = title_size.y + pad * 2
+    clicked = imgui.invisible_button("###shelf_toggle", width, row_h)
+    hovered = imgui.is_item_hovered()
+    rounding = gui.scaled(globals.settings.style_corner_radius)
+    if hovered:
+        draw_list.add_rect_filled(x, y, x + width, y + row_h, imgui.get_color_u32_rgba(*accent[:3], 0.12), rounding=rounding)
+    text_col = imgui.get_color_u32_rgba(*imgui.style.colors[imgui.COLOR_TEXT])
+    dim_col = imgui.get_color_u32_rgba(*imgui.style.colors[imgui.COLOR_TEXT_DISABLED])
+    line_h = imgui.get_text_line_height()
+    cx = x + pad
+    chevron = icons.chevron_down if opened else icons.chevron_right
+    draw_list.add_text(cx, y + (row_h - line_h) / 2, imgui.get_color_u32_rgba(*accent), chevron)
+    cx += imgui.calc_text_size(chevron).x + pad
+    imgui.push_font(imgui.fonts.bold)
+    draw_list.add_text(cx, y + pad, text_col, "To play")
+    imgui.pop_font()
+    cx += title_size.x + pad
+    # Count in a pill
+    label = str(count)
+    label_w = imgui.calc_text_size(label).x
+    pill_h = line_h + gui.scaled(4)
+    pill_y = y + (row_h - pill_h) / 2
+    draw_list.add_rect_filled(cx, pill_y, cx + label_w + pad * 2, pill_y + pill_h,
+                              imgui.get_color_u32_rgba(*accent[:3], 0.9), rounding=pill_h / 2)
+    draw_list.add_text(cx + pad, pill_y + gui.scaled(2), imgui.get_color_u32_rgba(1, 1, 1, 1), label)
+    cx += label_w + pad * 3
+    draw_list.add_text(cx, y + (row_h - line_h) / 2, dim_col,
+                       "updated since you last played, or installed and never played")
+    # Accent line under the title, fading to the right
+    line_y = y + row_h - gui.scaled(1)
+    steps = 12
+    for i in range(steps):
+        draw_list.add_line(x + width * i / steps, line_y, x + width * (i + 1) / steps, line_y,
+                           imgui.get_color_u32_rgba(*accent[:3], 0.6 * (1 - i / steps)), gui.scaled(1.5))
+    if hovered:
+        imgui.set_tooltip("Click to " + ("hide" if opened else "show") + " the shelf")
+    imgui.dummy(0, gui.scaled(2))
+    return clicked
+
+
 def draw_shelf(gui, ids: list[int]):
     """Horizontal row of 'to play' games above the grid (games of the current tab / filters)."""
     import imgui
@@ -165,7 +217,7 @@ def draw_shelf(gui, ids: list[int]):
         return
     games.sort(key=lambda g: -(g.installed_on or 0))
     opened = prefs()["shelf_open"]
-    if imgui.small_button(f"{icons.chevron_down if opened else icons.chevron_right} To play: updated since you last played ({len(games)})###shelf_toggle"):
+    if _shelf_header(gui, opened, len(games)):
         prefs()["shelf_open"] = not opened
         installdate.save_prefs()
     if not opened:
@@ -200,7 +252,15 @@ def draw_shelf(gui, ids: list[int]):
                 installdate.local_info().setdefault(game.id, {})["shelf_dismissed"] = game.installed_on
                 installdate.save_local_info()
             imgui.end_popup()
-        if imgui.small_button(f"{icons.play}###shelf_play_{game.id}"):
+        accent = globals.settings.style_accent
+        imgui.push_style_color(imgui.COLOR_BUTTON, *accent[:3], 0.85)
+        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, *accent[:3], 1.0)
+        imgui.push_style_color(imgui.COLOR_TEXT, 1.0, 1.0, 1.0, 1.0)
+        play = imgui.small_button(f"{icons.play}###shelf_play_{game.id}")
+        imgui.pop_style_color(3)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(f"Play {game.name}")
+        if play:
             from modules import callbacks
             callbacks.launch_game(game)
         imgui.same_line()
