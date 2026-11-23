@@ -90,7 +90,7 @@ from modules import (
 tool_page         = api.f95_threads_page + "44173/"
 github_page       = "https://github.com/Alex200295/F95Checker_Enhanced"  # fork (original: github.com/WillyJL/F95Checker)
 developer_page    = "https://linktr.ee/WillyJL"
-enhanced_donate_page = "https://ko-fi.com/alex200295"  # F95Checker Enhanced: your donation page (Ko-fi, PayPal.me...); empty = no button
+enhanced_donate_page = "https://ko-fi.com/alex200295"  # F95Checker Enhanced: donation page of the fork; empty = no button
 
 imgui.io = None
 imgui.style = None
