@@ -22,15 +22,18 @@ Display profile (per game)
       (its DLL is renamed to .dll.off when off).
 """
 import asyncio
+import concurrent.futures
 import contextlib
 import dataclasses
 import os
 import pathlib
+import hashlib
 import random
 import re
 import shutil
 import stat
 import subprocess
+import threading
 import time
 import zlib
 
@@ -863,6 +866,495 @@ def open_balance_popup():
 
 
 # ---------------------------------------------------------------------------
+# Tidy up (Library tools > Tidy up): the right category folder for each game, learnt from how you sort them
+# ---------------------------------------------------------------------------
+# Your category folders (HD GAMES, ANIME, AI ANIMATED...) are the first-level folders of a library holding several
+# games. A small naive Bayes model learns which F95 tags / engine go in which category from the games already
+# sorted, then proposes a category for games lying directly in a library folder (newly extracted) and points out
+# the ones that look misfiled. Moving stays on the same drive: a folder rename, instant, dates and links kept.
+
+@dataclasses.dataclass(slots=True)
+class TidyMove:
+    game: Game
+    src: pathlib.Path
+    dst: pathlib.Path
+    current: str             # "" = not in a category
+    target: str
+    confidence: float
+    why: str
+    selected: bool = True
+    state: str = ""
+
+
+def _features(game: Game) -> list[str]:
+    feats = [f"tag:{getattr(t, 'text', str(t)).lower()}" for t in game.tags]
+    engine = installdate.local_engine(game) or getattr(getattr(game, "type", None), "name", "")
+    if engine:
+        feats.append(f"engine:{engine.lower()}")
+    return feats
+
+
+def _library_layout() -> list[tuple[pathlib.Path, set[str]]]:
+    return [(root, _categories(root)) for root in installdate.library_roots(globals.games.values())]
+
+
+def _placement(game: Game, layout) -> tuple[pathlib.Path, pathlib.Path, str] | None:
+    """(library root, folder to move, current category or '') of the game."""
+    for root, cats in layout:
+        unit = move_unit(game, root, cats)
+        if unit is not None:
+            rel = unit.relative_to(root).parts
+            return root, unit, rel[0] if len(rel) == 2 and rel[0] in cats else ""
+    return None
+
+
+def tidy_model(layout=None) -> tuple[dict, dict, set[str]]:
+    """(category -> games count, category -> {feature: count}, all features) from the sorted games."""
+    import collections
+    layout = layout if layout is not None else _library_layout()
+    priors, counts, vocab = collections.Counter(), {}, set()
+    for game in globals.games.values():
+        place = _placement(game, layout)
+        if place is None or not place[2]:
+            continue
+        cat = place[2].upper()
+        priors[cat] += 1
+        bucket = counts.setdefault(cat, collections.Counter())
+        for f in _features(game):
+            bucket[f] += 1
+            vocab.add(f)
+    return dict(priors), counts, vocab
+
+
+def predict_category(game: Game, model) -> list[tuple[str, float]]:
+    """[(category, probability)] best first."""
+    import math
+    priors, counts, vocab = model
+    total = sum(priors.values())
+    if not total:
+        return []
+    feats = [f for f in _features(game) if f in vocab]
+    scores = {}
+    for cat, n in priors.items():
+        bucket = counts.get(cat, {})
+        size = sum(bucket.values())
+        score = math.log(n / total)
+        for f in feats:
+            score += math.log((bucket.get(f, 0) + 1) / (size + len(vocab)))
+        scores[cat] = score
+    top = max(scores.values())
+    exp = {c: math.exp(v - top) for c, v in scores.items()}
+    norm = sum(exp.values())
+    return sorted(((c, e / norm) for c, e in exp.items()), key=lambda ce: -ce[1])
+
+
+def _why(game: Game, cat: str, model) -> str:
+    _, counts, _ = model
+    bucket = counts.get(cat, {})
+    best = sorted((f for f in _features(game) if bucket.get(f)), key=lambda f: -bucket[f])[:3]
+    return ", ".join(f.split(":", 1)[1] for f in best)
+
+
+def tidy_plan(misfiled_threshold: float = 0.9) -> list[TidyMove]:
+    layout = _library_layout()
+    model = tidy_model(layout)
+    moves = []
+    for game in globals.games.values():
+        if game.launch_state is not LaunchState.Idle:
+            continue
+        place = _placement(game, layout)
+        if place is None:
+            continue
+        root, unit, current = place
+        ranking = predict_category(game, model)
+        if not ranking:
+            break
+        target, confidence = ranking[0]
+        if current.upper() == target:
+            continue
+        if not current:
+            if confidence < 0.5:
+                continue
+            selected = confidence >= 0.6
+        else:
+            if confidence < misfiled_threshold or installdate.local_info().get(game.id, {}).get("tidy_ok") == current:
+                continue
+            selected = False                      # misfiled: proposed, never ticked for you
+        cats = next(c for r, c in layout if r == root)
+        folder = next((c for c in cats if c.upper() == target), target)   # keep your spelling on this drive
+        dst = root / folder / unit.name
+        if dst.exists():
+            continue
+        moves.append(TidyMove(game, unit, dst, current, folder, confidence, _why(game, target, model), selected))
+    return sorted(moves, key=lambda m: (bool(m.current), -m.confidence))
+
+
+def tidy_move(move: TidyMove) -> str:
+    """Same drive: rename the folder, then point the executables to it. '' or an error."""
+    if move.game.launch_state is not LaunchState.Idle:
+        return "the game is running"
+    if move.dst.exists():
+        return "a folder with that name is already there"
+    try:
+        move.dst.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(move.src, move.dst)
+    except OSError as exc:
+        return f"{exc} (a file in use? close the game and Explorer windows on it)"
+    _repoint(move.game, move.src, move.dst)
+    _log(f"Tidy: {move.game.name}: {move.src} -> {move.dst}")
+    return ""
+
+
+def tidy_keep(move: TidyMove):
+    """'It is in the right place': not proposed again while it stays in this category."""
+    installdate.local_info().setdefault(move.game.id, {})["tidy_ok"] = move.current
+    installdate.save_local_info()
+
+
+def auto_tidy(games=None) -> list[str]:
+    """After a scan, option "Tidy up new games by itself": only games lying directly in a library folder,
+    sure enough (>= 80 %). Blocking (folder renames)."""
+    if not prefs().get("tidy_auto"):
+        return []
+    done = []
+    wanted = {g.id for g in games} if games else None
+    for move in tidy_plan():
+        if move.current or move.confidence < 0.8 or (wanted is not None and move.game.id not in wanted):
+            continue
+        if not tidy_move(move):
+            done.append(f"{move.game.name} -> {move.target}")
+    return done
+
+
+def open_tidy_popup():
+    import imgui
+    state = {"moves": tidy_plan(), "show_misfiled": False}
+
+    def content():
+        scaled = globals.gui.scaled if globals.gui else (lambda x: x)
+        imgui.text_disabled("Categories learnt from the games you already sorted (their F95 tags and engine).\n"
+                            "Moves stay on the same drive (a rename: instant, dates and links kept). Close the games first.")
+        p = prefs()
+        changed, value = imgui.checkbox("Tidy up new games by myself after each scan (only when sure: 80 % and more)###tidy_auto",
+                                        bool(p.get("tidy_auto")))
+        if changed:
+            p["tidy_auto"] = value
+            installdate.save_prefs()
+        _, state["show_misfiled"] = imgui.checkbox("Also show the games that look misfiled###tidy_mis", state["show_misfiled"])
+        moves = [m for m in state["moves"] if state["show_misfiled"] or not m.current]
+        chosen = [m for m in moves if m.selected and not m.state]
+        if not moves:
+            imgui.text("Everything is in its place.")
+        elif chosen and imgui.button(f"Move {len(chosen)} game(s)###tidy_go"):
+            for m in chosen:
+                m.state = tidy_move(m) or "done"
+            async_thread.run(installdate.scan_library(*[m.game for m in chosen if m.state == "done"], manual=False))
+        imgui.same_line()
+        if imgui.button("Refresh###tidy_refresh"):
+            state["moves"] = tidy_plan()
+        flags = imgui.TABLE_SCROLL_Y | imgui.TABLE_ROW_BACKGROUND | imgui.TABLE_BORDERS_INNER_HORIZONTAL
+        if moves and imgui.begin_table("###tidy_table", 6, flags, outer_size_height=scaled(400)):
+            for name in ("", "Game", "Now", "Goes to", "Sure", "Because of / state"):
+                imgui.table_setup_column(name)
+            imgui.table_headers_row()
+            for i, m in enumerate(moves):
+                imgui.table_next_row()
+                imgui.table_next_column()
+                if not m.state:
+                    _, m.selected = imgui.checkbox(f"###tidy_sel_{i}", m.selected)
+                imgui.table_next_column()
+                imgui.text(m.game.name)
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(f"{m.src}\n-> {m.dst}")
+                imgui.table_next_column()
+                imgui.text(m.current or "(library root)")
+                imgui.table_next_column()
+                imgui.text(m.target)
+                imgui.table_next_column()
+                imgui.text(f"{m.confidence * 100:.0f} %")
+                imgui.table_next_column()
+                if m.state:
+                    imgui.text(m.state)
+                else:
+                    imgui.text(m.why)
+                    if m.current:
+                        imgui.same_line()
+                        if imgui.small_button(f"Right place###tidy_ok_{i}"):
+                            tidy_keep(m)
+                            m.state = "kept"
+            imgui.end_table()
+
+    utils.push_popup(utils.popup, "Tidy up", content, buttons=True, closable=True, outside=False, popup_uuid="pctools_tidy")
+
+
+# ---------------------------------------------------------------------------
+# Shared Ren'Py engine (Library tools > Ren'Py engine: Analyse / Share / Undo)
+# ---------------------------------------------------------------------------
+# Every Ren'Py game carries its own copy of the engine (renpy\ and lib\), often identical between games of the
+# same Ren'Py version. Identical files on the same drive become NTFS hard links to one copy (like the DLSS 5 kit):
+# no space used twice. Games only read these files; an update replaces files (it never rewrites them in place),
+# which simply gives that game its own copy again. The copy kept is the oldest one, so no game looks updated.
+
+ENGINE_DIRS = ("renpy", "lib")
+ENGINE_MIN_SIZE = 16 * 1024          # smaller files are not worth a link
+
+
+@dataclasses.dataclass(slots=True)
+class EngineJob:
+    running: bool = False
+    cancel: bool = False
+    step: str = ""
+    done: int = 0
+    total: int = 0
+    groups: list = dataclasses.field(default_factory=list)      # [[path, path, ...], ...] identical, same drive
+    gain: dict = dataclasses.field(default_factory=dict)        # drive -> bytes to gain
+    linked: int = 0                                              # bytes freed by the last Share
+    message: str = ""
+
+
+engine_job = EngineJob()
+_last_redraw = 0.0
+
+
+def needs_redraw() -> bool:
+    """GUI draw condition: F95Checker only redraws on input, so progress of a long task would look frozen.
+    While one runs, a frame is drawn 4 times a second."""
+    global _last_redraw
+    from modules import toy
+    running = engine_job.running or balance_job.running or compress_job.running or (toy.gen_job is not None and toy.gen_job.running)
+    if running and time.monotonic() - _last_redraw > 0.25:
+        _last_redraw = time.monotonic()
+        return True
+    return False
+
+
+def renpy_folders() -> list[tuple[Game, pathlib.Path]]:
+    out = []
+    for game in globals.games.values():
+        exe = installdate._main_exe(game)
+        if exe is not None and (exe.parent / "renpy").is_dir() and (exe.parent / "game").is_dir():
+            out.append((game, exe.parent))
+    return out
+
+
+def _file_hash(path: pathlib.Path) -> str:
+    digest = hashlib.sha1()
+    with open(path, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _file_age(st) -> float:
+    return max(getattr(st, "st_birthtime", 0) or 0, st.st_mtime)
+
+
+def _hash_drive(files: list, job: EngineJob, lock) -> dict:
+    """One drive: content hash of every file, in path order (game folder after game folder). Same file id = hashed once."""
+    digests, by_inode = {}, {}
+    for path, st in sorted(files, key=lambda ps: str(ps[0]).lower()):
+        if job.cancel:
+            break
+        inode = (st.st_dev, st.st_ino)
+        if inode not in by_inode:
+            try:
+                by_inode[inode] = _file_hash(path)
+            except OSError:
+                by_inode[inode] = None
+        if by_inode[inode]:
+            digests[path] = by_inode[inode]
+        with lock:
+            job.done += 1
+    return digests
+
+
+def analyse_engine(job: EngineJob):
+    """Blocking. Fills job.groups / job.gain with identical engine files (same drive, same place, same bytes)."""
+    folders = [(g, f) for g, f in renpy_folders() if g.launch_state is LaunchState.Idle]
+    job.step, job.done, job.total = "Listing engine files (games)", 0, len(folders)
+    # 1. sizes from the folder listing (os.scandir: no extra disk access per file on Windows)
+    by_place: dict[tuple, list[pathlib.Path]] = {}
+    for _, folder in folders:
+        if job.cancel:
+            return
+        drive = os.path.splitdrive(str(folder))[0].upper()
+        stack = [folder / sub for sub in ENGINE_DIRS]
+        while stack:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as it:
+                    entries = list(it)
+            except OSError:
+                continue
+            for entry in entries:
+                with contextlib.suppress(OSError):
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(pathlib.Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        st = entry.stat(follow_symlinks=False)
+                        if st.st_size >= ENGINE_MIN_SIZE:
+                            path = pathlib.Path(entry.path)
+                            # same drive, same place in the engine, same size; drive letter on Windows, device elsewhere
+                            key = (drive or st.st_dev, path.relative_to(folder).as_posix().lower(), st.st_size)
+                            by_place.setdefault(key, []).append(path)
+        job.done += 1
+    # 2. real volume / file ids only for the files that may be duplicates
+    job.step, job.done, job.total = "Checking files", 0, sum(len(p) for p in by_place.values() if len(p) > 1)
+    candidates = []
+    for paths in by_place.values():
+        if len(paths) < 2:
+            continue
+        stats = []
+        for path in paths:
+            with contextlib.suppress(OSError):
+                stats.append((path, path.stat()))
+            job.done += 1
+        if len({(st.st_dev, st.st_ino) for _, st in stats}) > 1:
+            candidates.append(stats)
+    # 3. contents: one reading thread per drive (drives read at the same time), and on each drive the files in
+    #    folder order (game after game) rather than one engine file across all games: far fewer head moves.
+    per_drive: dict = {}
+    for stats in candidates:
+        for path, st in stats:
+            per_drive.setdefault(os.path.splitdrive(str(path))[0].upper() or st.st_dev, []).append((path, st))
+    job.step = f"Comparing contents ({len(per_drive)} drive{'s' if len(per_drive) > 1 else ''} at once)"
+    job.done, job.total = 0, sum(len(v) for v in per_drive.values())
+    lock = threading.Lock()
+    digests: dict[pathlib.Path, str] = {}
+    if per_drive:
+        with concurrent.futures.ThreadPoolExecutor(len(per_drive), thread_name_prefix="engine-hash") as pool:
+            for result in pool.map(lambda files: _hash_drive(files, job, lock), per_drive.values()):
+                digests.update(result)
+    groups, gain = [], {}
+    for stats in candidates:
+        if job.cancel:
+            break
+        by_hash: dict[str, list[tuple[pathlib.Path, os.stat_result]]] = {}
+        for path, st in stats:
+            if path in digests:
+                by_hash.setdefault(digests[path], []).append((path, st))
+        for same in by_hash.values():
+            inodes = {(st.st_dev, st.st_ino) for _, st in same}
+            if len(inodes) > 1:
+                groups.append([p for p, _ in same])
+                drive = os.path.splitdrive(str(same[0][0]))[0].upper() or f"volume {same[0][1].st_dev}"
+                gain[drive] = gain.get(drive, 0) + same[0][1].st_size * (len(inodes) - 1)
+    if job.cancel:
+        groups, gain = [], {}
+    job.groups, job.gain = groups, gain
+    job.message = (f"{installdate.size_display(sum(gain.values()))} can be saved ({len(groups)} files shared by several games)"
+                   if groups else "Nothing to share: the engines are all different or already shared.")
+
+
+def share_engine(job: EngineJob):
+    """Blocking. Each group of identical files -> hard links to the oldest copy."""
+    job.step, job.done, job.total, job.linked = "Sharing", 0, len(job.groups), 0
+    running = {str(f) for g, f in renpy_folders() if g.launch_state is not LaunchState.Idle}
+    for group in job.groups:
+        if job.cancel:
+            break
+        job.done += 1
+        try:
+            stats = [(p, p.stat()) for p in group]
+        except OSError:
+            continue
+        master, master_st = min(stats, key=lambda ps: _file_age(ps[1]))
+        for path, st in stats:
+            if (st.st_dev, st.st_ino) == (master_st.st_dev, master_st.st_ino):
+                continue
+            if any(path.is_relative_to(r) for r in running):
+                continue
+            tmp = path.with_name(path.name + ".f95link")
+            try:
+                with contextlib.suppress(FileNotFoundError):
+                    tmp.unlink()
+                os.link(master, tmp)
+                if not os.access(path, os.W_OK):
+                    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+                os.replace(tmp, path)
+                job.linked += st.st_size
+            except OSError as exc:
+                with contextlib.suppress(OSError):
+                    tmp.unlink()
+                _log(f"Engine sharing skipped {path}: {exc}")
+    job.groups = []
+    job.message = f"{installdate.size_display(job.linked)} freed."
+    _log(f"Ren'Py engine sharing: {job.message}")
+
+
+def unshare_engine(job: EngineJob):
+    """Blocking. Every shared engine file becomes a separate copy again (needs the space back)."""
+    job.step, job.done, job.total = "Separating", 0, 0
+    count = 0
+    for game, folder in renpy_folders():
+        if game.launch_state is not LaunchState.Idle:
+            continue
+        for sub in ENGINE_DIRS:
+            for current, _, files in os.walk(folder / sub):
+                for name in files:
+                    path = pathlib.Path(current) / name
+                    tmp = path.with_name(path.name + ".f95copy")
+                    try:
+                        if path.stat().st_nlink < 2:
+                            continue
+                        shutil.copy2(path, tmp)
+                        os.replace(tmp, path)
+                        count += 1
+                    except OSError as exc:
+                        with contextlib.suppress(OSError):
+                            tmp.unlink()
+                        _log(f"Engine separation skipped {path}: {exc}")
+    job.message = f"{count} engine files are separate copies again."
+
+
+async def _engine_task(func):
+    job = engine_job
+    if job.running:
+        return
+    job.running, job.cancel = True, False
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, func, job)
+    except Exception as exc:
+        job.message = f"Error: {exc}"
+        _log(f"Engine sharing: {error.traceback()}")
+    finally:
+        job.running = False
+        job.step = ""
+
+
+def open_engine_popup():
+    import imgui
+
+    def content():
+        job = engine_job
+        imgui.text_disabled("Identical Ren'Py engine files (renpy\\, lib\\) of your games on the same drive become one copy\n"
+                            "(NTFS hard links, like the DLSS 5 kit). Games run as before; an update gives the game its own copy back.\n"
+                            "Running games are left out. Undo makes every engine file a separate copy again (needs the space).")
+        if job.running:
+            imgui.text(f"{job.step}: {job.done}/{job.total}")
+            imgui.same_line()
+            if imgui.small_button("Stop###eng_stop"):
+                job.cancel = True
+            return
+        if job.message:
+            imgui.text(job.message)
+        for drive, size in sorted(job.gain.items()):
+            if job.groups:
+                imgui.bullet_text(f"{drive.upper()}  {installdate.size_display(size)}")
+        if imgui.button("Analyse###eng_an"):
+            async_thread.run(_engine_task(analyse_engine))
+        if job.groups:
+            imgui.same_line()
+            if imgui.button(f"Share ({installdate.size_display(sum(job.gain.values()))})###eng_share"):
+                async_thread.run(_engine_task(share_engine))
+        imgui.same_line()
+        if imgui.button("Undo###eng_undo"):
+            async_thread.run(_engine_task(unshare_engine))
+
+    utils.push_popup(utils.popup, "Ren'Py engine sharing", content, buttons=True, closable=True, outside=False, popup_uuid="pctools_engine")
+
+
+# ---------------------------------------------------------------------------
 # Display profile: Lossless Scaling, ReShade
 # ---------------------------------------------------------------------------
 
@@ -908,7 +1400,7 @@ def _steam_libraries() -> list[pathlib.Path]:
     return list(dict.fromkeys(libs))
 
 
-_ls_cache: tuple[float, pathlib.Path | None] = (0.0, None)
+_ls_cache: tuple[float, pathlib.Path | None] = (float("-inf"), None)
 
 
 def find_lossless() -> pathlib.Path | None:
@@ -991,6 +1483,7 @@ DLSS5_LINKED = [
     "dxgi.dll", "dlss5-feed.addon64", "renodx-dlss5.addon64", "nvngx_dlss.dll", "nvngx_dlssnr.dll",
     "reshade-shaders/Shaders/DLSS5_Feed.fx", "reshade-shaders/Shaders/ReShade.fxh", "reshade-shaders/Shaders/ReShadeUI.fxh",
     "reshade-shaders/Shaders/LumeniteFX/lumenite_Kernel.fx",
+    "reshade-shaders/Shaders/LumeniteFX/include/lumenite_ColorManagement.fxh",
     "reshade-shaders/Shaders/LumeniteFX/include/lumenite_Compute.fxh",
     "reshade-shaders/Shaders/LumeniteFX/include/lumenite_Helpers.fxh",
     "reshade-shaders/Shaders/LumeniteFX/include/lumenite_Projections.fxh",
@@ -1116,6 +1609,44 @@ def dlss5_install(game: Game) -> str:
     }, indent=1), encoding="utf-8")
     _log(f"DLSS 5 kit installed in {folder}")
     return ""
+
+
+def dlss5_repair(game: Game) -> int:
+    """Links the kit files added since this game was installed (listed in DLSS5_LINKED, missing in the game).
+    Returns how many were added. Silent: missing kit file or locked folder = nothing done."""
+    import json
+    import shutil
+    folder = dlss5_folder(game)
+    if folder is None or dlss5_state(game) != "installed":
+        return 0
+    kit = dlss5_kit(folder)
+    if kit is None:
+        return 0
+    added = []
+    try:
+        data = json.loads((folder / DLSS5_MANIFEST).read_text(encoding="utf-8"))
+        for rel in DLSS5_LINKED:
+            dst = folder / rel
+            if dst.exists() or dst.with_name(dst.name + ".off").exists() or not (kit / rel).is_file():
+                continue                     # present, switched off by the user (dxgi.dll.off), or not in the kit
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(kit / rel, dst)
+            except OSError:
+                shutil.copy2(kit / rel, dst)
+            added.append(rel)
+            if rel not in data["files"]:
+                data["files"].insert(0, rel)
+        if added:
+            (folder / DLSS5_MANIFEST).write_text(json.dumps(data, indent=1), encoding="utf-8")
+            _log(f"DLSS 5 kit completed in {folder}: {', '.join(added)}")
+    except (OSError, ValueError, KeyError) as exc:
+        _log(f"DLSS 5 repair failed in {folder}: {exc}")
+    return len(added)
+
+
+def dlss5_repair_all(games=None) -> int:
+    return sum(dlss5_repair(game) for game in (games if games is not None else globals.games.values()))
 
 
 def dlss5_remove(game: Game) -> str:
