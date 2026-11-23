@@ -1020,6 +1020,7 @@ class MainGUI():
                         or api.updating
                         or showcase.needs_redraw()
                         or visuals.needs_redraw()
+                        or pctools.needs_redraw()
                         or lock.tick(self)
                     )
                     if draw:

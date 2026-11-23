@@ -127,7 +127,7 @@ def signature(path: pathlib.Path) -> str:
 # Real-ESRGAN
 # ---------------------------------------------------------------------------
 
-_exe_cache: tuple[float, str, pathlib.Path | None] = (0.0, "", None)
+_exe_cache: tuple[float, str, pathlib.Path | None] = (float("-inf"), "", None)
 
 
 def find_upscaler() -> pathlib.Path | None:

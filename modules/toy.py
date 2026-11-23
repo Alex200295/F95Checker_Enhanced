@@ -853,7 +853,7 @@ def engine_of(game: Game) -> str:
     return engine
 
 
-_ghr_cache: tuple[float, pathlib.Path | None] = (0.0, None)
+_ghr_cache: tuple[float, pathlib.Path | None] = (float("-inf"), None)
 
 
 def ghr_cached() -> pathlib.Path | None:

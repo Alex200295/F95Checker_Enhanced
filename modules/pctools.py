@@ -1111,6 +1111,19 @@ class EngineJob:
 
 
 engine_job = EngineJob()
+_last_redraw = 0.0
+
+
+def needs_redraw() -> bool:
+    """GUI draw condition: F95Checker only redraws on input, so progress of a long task would look frozen.
+    While one runs, a frame is drawn 4 times a second."""
+    global _last_redraw
+    from modules import toy
+    running = engine_job.running or balance_job.running or compress_job.running or (toy.gen_job is not None and toy.gen_job.running)
+    if running and time.monotonic() - _last_redraw > 0.25:
+        _last_redraw = time.monotonic()
+        return True
+    return False
 
 
 def renpy_folders() -> list[tuple[Game, pathlib.Path]]:
@@ -1136,20 +1149,47 @@ def _file_age(st) -> float:
 
 def analyse_engine(job: EngineJob):
     """Blocking. Fills job.groups / job.gain with identical engine files (same drive, same place, same bytes)."""
-    job.step, job.done, job.total = "Listing engine files", 0, 0
-    by_place: dict[tuple, list[tuple[pathlib.Path, os.stat_result]]] = {}
     folders = [(g, f) for g, f in renpy_folders() if g.launch_state is LaunchState.Idle]
+    job.step, job.done, job.total = "Listing engine files (games)", 0, len(folders)
+    # 1. sizes from the folder listing (os.scandir: no extra disk access per file on Windows)
+    by_place: dict[tuple, list[pathlib.Path]] = {}
     for _, folder in folders:
-        for sub in ENGINE_DIRS:
-            for current, _, files in os.walk(folder / sub):
-                for name in files:
-                    path = pathlib.Path(current) / name
-                    with contextlib.suppress(OSError):
-                        st = path.stat()
+        if job.cancel:
+            return
+        drive = os.path.splitdrive(str(folder))[0].upper()
+        stack = [folder / sub for sub in ENGINE_DIRS]
+        while stack:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as it:
+                    entries = list(it)
+            except OSError:
+                continue
+            for entry in entries:
+                with contextlib.suppress(OSError):
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(pathlib.Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        st = entry.stat(follow_symlinks=False)
                         if st.st_size >= ENGINE_MIN_SIZE:
-                            # same volume (st_dev) = hard link possible; same place in the engine and same size
-                            by_place.setdefault((st.st_dev, path.relative_to(folder).as_posix().lower(), st.st_size), []).append((path, st))
-    candidates = [paths for paths in by_place.values() if len({(st.st_dev, st.st_ino) for _, st in paths}) > 1]
+                            path = pathlib.Path(entry.path)
+                            # same drive, same place in the engine, same size; drive letter on Windows, device elsewhere
+                            key = (drive or st.st_dev, path.relative_to(folder).as_posix().lower(), st.st_size)
+                            by_place.setdefault(key, []).append(path)
+        job.done += 1
+    # 2. real volume / file ids only for the files that may be duplicates
+    job.step, job.done, job.total = "Checking files", 0, sum(len(p) for p in by_place.values() if len(p) > 1)
+    candidates = []
+    for paths in by_place.values():
+        if len(paths) < 2:
+            continue
+        stats = []
+        for path in paths:
+            with contextlib.suppress(OSError):
+                stats.append((path, path.stat()))
+            job.done += 1
+        if len({(st.st_dev, st.st_ino) for _, st in stats}) > 1:
+            candidates.append(stats)
     job.step, job.total = "Comparing contents", sum(len(c) for c in candidates)
     groups, gain = [], {}
     for paths in candidates:
@@ -1331,7 +1371,7 @@ def _steam_libraries() -> list[pathlib.Path]:
     return list(dict.fromkeys(libs))
 
 
-_ls_cache: tuple[float, pathlib.Path | None] = (0.0, None)
+_ls_cache: tuple[float, pathlib.Path | None] = (float("-inf"), None)
 
 
 def find_lossless() -> pathlib.Path | None:
