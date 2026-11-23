@@ -131,7 +131,7 @@ _exe_cache: tuple[float, str, pathlib.Path | None] = (float("-inf"), "", None)
 
 
 def find_upscaler() -> pathlib.Path | None:
-    """Library tools path (file or its folder), else <data>/realesrgan, Downloads (2 levels deep)."""
+    """Library tools path (file or its folder), else <app>/tools/realesrgan (shipped with the release), <data>/realesrgan, Downloads (2 levels deep)."""
     global _exe_cache
     custom = prefs()["upscale_path"].strip().strip('"')
     if _exe_cache[1] == custom and time.monotonic() - _exe_cache[0] < 30:
@@ -145,7 +145,7 @@ def find_upscaler() -> pathlib.Path | None:
                 found = candidate
                 break
     else:
-        for folder in (globals.data_path / "realesrgan", pathlib.Path.home() / "Downloads", globals.data_path):
+        for folder in (globals.self_path / "tools" / "realesrgan", globals.data_path / "realesrgan", pathlib.Path.home() / "Downloads", globals.data_path):
             for pattern in [n for n in names] + [f"*/{n}" for n in names] + [f"*/*/{n}" for n in names]:
                 with contextlib.suppress(OSError):
                     found = next((p for p in folder.glob(pattern) if p.is_file()), None)

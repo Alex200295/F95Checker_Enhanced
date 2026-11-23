@@ -88,7 +88,7 @@ from modules import (
 )
 
 tool_page         = api.f95_threads_page + "44173/"
-github_page       = "https://github.com/WillyJL/F95Checker"
+github_page       = "https://github.com/Alex200295/F95Checker_Enhanced"  # fork (original: github.com/WillyJL/F95Checker)
 developer_page    = "https://linktr.ee/WillyJL"
 
 imgui.io = None
@@ -1921,7 +1921,7 @@ class MainGUI():
                 depth.open_popup(game)
             self.draw_hover_text(
                 "Depth map of every picture (graphics card, once). In the game, Shift+P: living pictures\n"
-                "(near things move slightly) or 3D side by side for the Quest 3 (Virtual Desktop, Half SBS). Ren'Py 8.1+.",
+                "(near things move slightly) or 3D side by side for a VR headset (e.g. Quest 3 + Virtual Desktop, Half SBS). Ren'Py 8.1+.",
                 text=None,
             )
             if extras._crash_file(game) is not None:
@@ -3267,10 +3267,11 @@ class MainGUI():
             imgui.same_line()
             imgui.begin_group()
             imgui.push_font(imgui.fonts.big)
-            imgui.text("F95Checker")
+            imgui.text("F95Checker Enhanced")
             imgui.pop_font()
             imgui.text(f"Version {globals.version_name}")
             imgui.text("Made with <3 by WillyJL")
+            imgui.text("Enhanced fork by Alex200295")
             imgui.text("")
             imgui.text(f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
             imgui.text(f"OpenGL {gl.glGetInteger(gl.GL_MAJOR_VERSION)}.{gl.glGetInteger(gl.GL_MINOR_VERSION)},  Py {OpenGL.__version__}")
@@ -3313,6 +3314,11 @@ class MainGUI():
             imgui.spacing()
             imgui.text("If you find bugs or have some feedback, don't be afraid to let me know either on GitHub (using issues or pull requests) "
                        "or on F95zone (in the thread comments or in direct messages).")
+            imgui.spacing()
+            imgui.spacing()
+            imgui.text("F95Checker Enhanced is a modified version of F95Checker (GPLv3), not made nor supported by WillyJL. Bugs in the "
+                       "Enhanced features (Library tools, toy, HD & 60 fps, 3D pictures, cheats...) go to the fork's GitHub issues, "
+                       "not to WillyJL. Third-party tools shipped with it: see THIRD_PARTY_NOTICES.md next to the exe.")
             imgui.spacing()
             imgui.spacing()
             imgui.text("Please note that this software is not ( yet ;) ) officially affiliated with the F95zone platform.")
@@ -4555,7 +4561,7 @@ class MainGUI():
                 draw_settings_label(
                     "Real-ESRGAN:",
                     "realesrgan-ncnn-vulkan.exe (github.com/xinntao/Real-ESRGAN, Releases, ...-windows.zip, unzipped).\n"
-                    "Empty = looked for in <F95Checker data>\\realesrgan and in your Downloads folder.\n"
+                    "Empty = the one shipped with F95Checker (tools\\realesrgan), else <F95Checker data>\\realesrgan and your Downloads folder.\n"
                     f"Now: {up_exe or 'not found'}"
                 )
                 imgui.set_next_item_width(right_width)
@@ -4568,7 +4574,7 @@ class MainGUI():
                 draw_settings_label(
                     "RIFE:",
                     "rife-ncnn-vulkan.exe (github.com/nihui/rife-ncnn-vulkan, Releases, ...-windows.zip, unzipped), used by\n"
-                    "HD & 60 fps for the animations. Empty = looked for in <F95Checker data>\\rife and in your Downloads folder.\n"
+                    "HD & 60 fps for the animations. Empty = the one shipped with F95Checker (tools\\rife), else <F95Checker data>\\rife and Downloads.\n"
                     "Without it ffmpeg's motion interpolation is used (slower, less clean on fast moves).\n"
                     f"Now: {rife_exe or 'not found'}"
                 )
@@ -4580,7 +4586,7 @@ class MainGUI():
                     remaster.forget_tools()
                 # HD for (screen height): 1440p / 2160p when playing on the Quest 3 through Virtual Desktop
                 draw_settings_label("HD for:", "Height of the screen you play on. HD pictures are made for the Ren'Py 8.4+ games made for less.\n"
-                                               "1080p: your monitor. 1440p / 2160p: Quest 3 through Virtual Desktop with Windows at that resolution\n"
+                                               "1080p: a 1080p monitor. 1440p / 2160p: a 1440p / 4K monitor, or a VR headset (Quest 3 + Virtual Desktop) at that resolution\n"
                                                "(then the 1080p games get HD pictures too: about 3 to 4 times the space of their pictures).")
                 imgui.set_next_item_width(right_width)
                 targets = list(remaster.HD_TARGETS)
@@ -4594,7 +4600,7 @@ class MainGUI():
                 draw_settings_label(
                     "Depth model:",
                     "Depth Anything V2 Small (ONNX), for 3D & living pictures: huggingface.co/onnx-community/depth-anything-v2-small,\n"
-                    "folder onnx, model.onnx, saved as depth_anything_v2_small.onnx in Downloads (or set its path here).\n"
+                    "folder onnx, model.onnx, saved as depth_anything_v2_small.onnx in Downloads (or set its path here). Shipped with F95Checker (tools\\depth).\n"
                     f"Now: {model or 'not found'}" + (f"\n{depth.runtime_error()}" if depth.runtime_error() else "")
                 )
                 imgui.set_next_item_width(right_width)

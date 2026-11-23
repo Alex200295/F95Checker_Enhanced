@@ -1513,7 +1513,7 @@ PreprocessorDefinitions=DLSS5_MV_PROVIDER=3
 """
 DLSS5_RPY = """# Added by F95Checker: DLSS 5 Neural Rendering (ReShade + DLSS5-Feeder, F95zone guide thread 312990).
 # With ReShade on (dxgi.dll next to the game's exe): Direct3D 11 renderer (ANGLE2, which ReShade hooks),
-# powersave off, 30 fps cap (RTX 3060: keeps the GPU cool, the neural pass is slow anyway).
+# powersave off, 30 fps cap (keeps mid-range GPUs cool, the neural pass is slow anyway).
 # With ReShade switched off by F95Checker (dxgi.dll.off): Ren'Py defaults are restored.
 # Delete this file (and dlss5_settings.rpyc) to stop it; the files next to the exe are listed in _f95dlss5.json.
 
@@ -1803,7 +1803,7 @@ def draw_context_menu(game: Game):
                 from modules import callbacks
                 callbacks.clipboard_copy(exe.name)
             if dlss5_state(game) in ("installed", "other") and reshade_enabled(game) and reshade_wanted(game) is not False:
-                imgui.text_colored("DLSS 5 is on in this game: the RTX 3060 will not keep up with both.\n"
+                imgui.text_colored("DLSS 5 is on in this game: most graphics cards will not keep up with both.\n"
                                    "Choose ReShade 'off at launch' below to play with frame generation.", 1.0, 0.65, 0.2)
         state = reshade_enabled(game)
         if state is None:

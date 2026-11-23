@@ -1,304 +1,71 @@
-# F95Checker
-
-An update checker and library tool for (NSFW) games on the [F95zone](https://f95zone.to/) platform.
-
-<p align="center">
-  <img src=".github/images/F95Checker.png">
-</p>
-
-## Features:
-
-- Blazing fast™ and reliable
-- Very easy to setup and use
-- Cross platform (Windows, Linux, macOS-x64, macOS-arm64)
-- Beautiful and customizable interface
-- Compact list, comfy grid and kanban columns view modes
-- 2FA accounts supported
-- Alert and inbox checker
-- No account needed for basic functionality
-- Track what versions you installed and played
-- Launch games straight from the tool
-- Custom labels and tabs, organize your library how you want to
-- Archive games to temporarily mute updates
-- Supported game details:
-  - Name, Version, Developer
-  - Type (game engine / type of thread)
-  - Status (completed / on hold / abandoned)
-  - Last update, last launched and added on dates
-  - Description / overview and changelog
-  - Cover images (including gifs)
-  - Preview images/gallery
-  - Download links, F95zone Donor DDL and RPDL.net support
-  - Forum tags and personal labels
-  - Forum score (value out of 5) and personal rating (5 stars)
-  - Forum reviews (20 most recents)
-  - Personal notes (textbox you can use however you want)
-  - Locally tracked playtime duration
-  - Most of these details, and some extras, tracked in a local timeline
-- Sorting and filtering by most of above details, with multisort and multifilter support
-- Tag highlighting to quickly spot content you might like and what to avoid
-- Also supports media (animations, collections...) and normal threads
-- Custom launch command wrappers, support for Wine/Proton on Linux/macOS
-- Custom games to manually add games from other platforms
-- Auto updating (the tool, NOT the games)
-- Background mode (periodically refresh in background and receive desktop notifications)
-- Many ways to add games, including a companion web browser extension
-- Network proxy support
-
-## Download: [here](https://github.com/WillyJL/F95Checker/releases/latest)
-
-## Compatibility:
-
-Built with Python 3.11/3.12 for Windows, Linux and macOS (x64 and arm64).
-
-Binaries are available for all 3 platforms, requiring no setup at all. If instead you want to run from source note that Python 3.11+ is required and you'll need to
-install the requirements with pip.
-
-## Installation:
-
-- **Windows:** Extract and run `F95Checker.exe`
-
-- **Linux:** Extract and run `F95Checker`
-
-- **macOS:** Extract, right click `F95Checker.app`, select "Open" in the menu and click "Open" in the next popup **\***
-
-- **Source:** Make sure you have Python 3.11/3.12, install requirements with `pip3 install -U -r requirements.txt` and run with `python3 main.py` (this file is marked
-executable and has a shebang, you might be able to just double click it!)
-
-**\*** If macOS says the application is damaged and should be moved to the trash you need to: close the popup, open a terminal, navigate to the
-location of the `F95Checker.app`, type in `xattr -d com.apple.quarantine F95Checker.app` and press enter; after this the method above to open the app should work fine.
-
-## Browser extension
-
-The F95Checker browser addon makes interactions between the F95zone forum and the F95Checker app more convenient:
-
-- Easily add games to your desktop F95Checker library while browsing the forum in 3 ways:
-  - Clicking the extension icon while viewing a thread
-  - Right clicking a link to a thread
-  - Right clicking anywhere on the background of a thread page
-- Quickly see what games you have added to your list (and which tab) with convenient icons on the forum
-- Highlight tags on the forum like in the app, to quickly spot what you might like and what to avoid
-
-The extension is available for both major browser families (Brave and Edge count as Chrome, LibreWolf counts as Firefox):
-
-- **Chrome:** Open `chrome://extensions/` in browser, enable "Developer mode", reload the page and drag `browser/chrome.zip` (from the app install folder) into the page
-
-- **Firefox:** Install from [AMO](https://addons.mozilla.org/firefox/addon/f95checker-browser-addon/)
-
-Alternatively, you can find a guided install in F95Checker sidebar, in Extension > Install.
-
-Please note that this extension is solely to aid the usage of the desktop tool, you still need the desktop application installed and running.
-
-## FAQ:
-
-- **Crashes on start with GLError 'invalid operation'?**
-
-  Update Windows, update GPU drivers, and if you have them update MSI AfterBurner and RTSS or just disable / remove them.
-
-- **How do I use this tool?** and **How do the versions and checkboxes work?**
-
-  After you have installed it using the instructions above, the day-to-day usage is quite simple. You need to **add the games you want to track** (more on this below)
-  and every once in a while you **hit the big `Refresh!` button to check for updates** of your games. Each game has 2 main checkboxes, the `Installed` checkbox
-  and the `Finished` checkbox; this should be quite intuitive: if you have a game downloaded on your system, mark it as installed, and once you have finished
-  playing the content for that version mark it as finished. **When a game receives an update you will get a popup about it at the end of the refresh.**
-  If the name changes (the game has been renamed by the developer) or its status changed (e.g. from normal to abandoned) you will get a popup about it. If a version
-  number change is detected, however, along with the update popup there will also be an `Update Available` marker next to the game's name and the installed checkbox
-  will be half selected. This is because the tool remembers what version you had marked as installed, so it will show you that you still have it installed, just not
-  on the latest version. The finished checkbox will still be selected, because you had finished that installed version. In this state you can click the installed
-  checkbox to mark the latest version as installed. Now the finished checkbox will be half selected instead, because the version that is now installed is not what
-  you had marked as finished, indicating that there is now more content you haven't played yet.
-  **Essentially, remember that the `Installed` box means `Do I have the latest version downloaded?`, and the `Finished` box means `Did I finish playing what I have downloaded?`**
-
-- **How do I add games to the tool?**
-
-  There are quite a few ways:
-
-  - Open the thread in a browser, copy the URL, paste it in the tool's bottom textbox and click `Add!`
-  - Type a name in the bottombar, press enter and select from the options (this uses F95zone's latest updates search)
-  - Using the browser extension (more info above)
-  - Using the `Manage > Import` section in the settings sidebar:
-    - Thread links to paste multiple links at once
-    - F95zone bookmarks and watched threads to add the pages you saved on your F95zone account
-    - Browser bookmarks to import the bookmarks you saved in your browser
-    - URL shortcut file for Windows web shortcut files
-
-      (For the last 2 you can drag the files into the tool window)
-
-  After adding the games make sure to refresh atleast once to fetch all the game information!
-
-- **Can you make it download game updates?** and **Can you make it detect my game folders?**
-
-  The main reason I decided to make this tool is because all the other alternatives were, in my opinion, too complicated to setup and did way more than what I wanted /
-  needed. Most of this overhead I believe comes from trying to manage your game folders and files on disk, which introduces SO much complexity and room for error. That
-  is what brought me to making my own program, which will not automatically download updates, manage your folders and so on.
-  **F95Checker is not a tool that manages your games, it is a tool that helps you manage your games yourself.**
-  Downloads are supported with normal download links, F95zone Donor DDL and RPDL.net torrents, but starting the downloads and moving files are for you to manage.
-
-- **Where is my data stored?**
-
-  F95Checker stores all it's data at:
-
-  - `%APPDATA%\f95checker\` on Windows
-    (usually `C:\Users\username\AppData\Roaming\f95checker\`)
-  - `~/.config/f95checker/` on Linux
-    (usually `/home/username/.config/f95checker/`)
-  - `~/Library/Application Support/f95checker/` on macOS
-    (usually `/Users/username/Library/Application Support/f95checker/`)
-
-  in a file named `db.sqlite3`, while images are saved in the `images` folder as `thread-id.ext`. The `imgui.ini` file stores some interface preferences, like window
-  size and position, enabled columns and so on. Files named `f95checker.json` and `config.ini` are remainders from previous versions (pre v9.0 and pre v7.0
-  respectively). When opening v9.0+ it will attempt to migrate these old configs to the new database system, once that is done these old files will be ignored.
-
-- **How do I customize the interface, the columns and the sorting?**
-
-  Everything to do with columns and sorting can only be changed from list view but also applies to grid and kanban view. Each column has a header bar at the top, you can
-  use those to customize the interface. You can drag the headers around to reorder the columns, you can drag the edge of some select columns to change their width (only
-  works if other variable size columns are enabled). Left clicking on a header will sort the list by that column, holding shift while clicking a header will add a
-  secondary sort (multisort). Right clicking on any header will allow you to enable or disable some columns and also gives you access to manual sort. When manual sort is
-  enabled you can drag games (in list and grid mode, not in kanban view) to reorder them. Manual sort remembers the order if you disable and enable it again, but you
-  will not be able to reorder the games if you have any filters enabled.
-
-- **How can I try new features early?**
-
-  When I implement new features or work on fixing bugs I submit directly to the [main branch on GitHub](https://github.com/WillyJL/F95Checker), so running directly from
-  the source code there could prove unstable at times, and also requires a development environment with an updated Python install and all the requirements up to date. To
-  make testing new versions easier, I sometimes issue beta builds. This usually happens when I make some significant change, or an important bugfix, and want to have
-  some binaries that everyone can try easily and give me feedback.
-
-  **You can enable automatic beta updates in Settings > Manage > F95Checker Beta.**
-
-  Alternatively, you can see the beta builds in the **[Actions tab on the GitHub repo](https://github.com/WillyJL/F95Checker/actions)** and manually look for entries with
-  a green tick, open one, scroll down to the `Artifacts` section, look for your platform and click on it to download.
-  Keep in mind you will need to be logged into GitHub to download.
-
-- **How long will it take for changes on the forum to be detected by F95Checker?**
-
-  Check the "About the speed™" section below, especially the flowchart.
-
-## About the speed™:
-
-F95zone does not yet have a proper API serving the information needed by this tool, so the only way to gather them is by requesting the full game threads like a normal
-browser would. However this is not practical because it consumes a lot of network and computing resources, takes way too long and puts unnecessary stress on the forum
-servers.
-
-This project makes a compromise: I run an independent cache API `api.f95checker.dev` (internally called F95Indexer) specifically for this tool, which will request
-the threads from F95zone when someone refreshes them from F95Checker, parse them for relevant data and then cache this data. When you refresh, you only get data from this
-dedicated API, not directly from F95zone. This data is cached for up to 7 days, with some exceptions:
-- it monitors F95zone Latest Updates every 5 minutes, most updates are detected within this time frame
-- all version numbers tracked by F95zone Latest Updates are checked every 12 hours, this detects unpromoted updates
-- threads not tracked by F95zone Latest Updates at all are checked at least every 2 days
-- other thread types and other changes not in F95zone Latest Updates are checked at least every 7 days
-- if a requested thread does not exist, it will not be checked again for 14 days
-
-**If that sounds confusing, check this flowchart which should make it clearer:**
-<details>
-  <summary>Flowchart of maximum delay for thread changes to be detected by the cache API</summary>
-  <img width="1541" height="1169" alt="Screenshot_20260328_215855" src="https://github.com/user-attachments/assets/a7d9c244-2a6f-45c3-a628-bc46c0d2248e" />
-</details>
-
-The tool will ask this API when the last time was that a thread changed any of its data, 10 threads at a time; the API will check if any of these are due to be
-checked again, do it if so, then return the timestamps; the tool will only fetch the full data from the API for threads that changed since the last refresh (unless you force a
-full refresh, in which case the full data for all threads is fetched from the API; note that forcing a full refresh does not affect when the cache API will get new data from F95zone, it only affects your tool getting data from the cache API).
-
-This is what allows F95Checker to quickly check thousands of games in a matter of seconds. However running a full recheck on your end will not force the cache API to
-get new data, so when some less important details change they will be detected at most 7 days later.
-
-## Progress and plans tracker:
-
-Upcoming features and fixes are tracked on the [GitHub Project page](https://github.com/users/WillyJL/projects/2/views/1).
-
-You can pitch your feature requests and bug reports either in the [GitHub issues](https://github.com/WillyJL/F95Checker/issues) or on the
-[F95zone thread](https://f95zone.to/threads/44173/).
-
-## Old versions:
-
-Versions before 7.0 are archived in the [F95zone thread](https://f95zone.to/threads/44173/).
-
-## Disclaimer:
-
-As of F95Checker 11.0, you can use the tool without logging into F95zone. Some actions still require an account however:
-- Download links and F95zone Donor DDL (RPDL.net torrents require their own separate account)
-- Alerts and inbox notification checking (disabled by default as of 11.0)
-- Importing bookmarked and watched threads
-- Opening webpages if you enabled Browser > Download pages (otherwise images and spoiler content would be broken)
-
-I know you might be skeptical about inserting your account credentials into some random dude's program, and I totally agree with you if you are, but you can read through
-the code and you will see that this doesn't do anything harmful. If you still aren't sure you can create a second account just for this program.
-
-## Contributing:
-
-Please do! I poured my heart and soul into this tool and hearing suggestions or getting help with the code really helps!
-
-You can help out in many ways, from simply suggesting features or reporting bugs (you can do those in the [GitHub issues](https://github.com/WillyJL/F95Checker/issues)
-or on the [F95zone thread](https://f95zone.to/threads/44173/)), to adding to the codebase (through [GitHub pull requests](https://github.com/WillyJL/F95Checker/pulls)
-or by posting patches in the [F95zone thread](https://f95zone.to/threads/44173/)).
-
-## Developer note:
-
-This software is licensed under the 3rd revision of the GNU General Public License (GPLv3) and is provided to you for free. Furthermore, due to its license, it is also
-free as in freedom: you are free to use, study, modify and share this software in whatever way you wish as long as you keep the same license.
-
-However, F95Checker is actively developed by one person only, WillyJL, and not with the aim of profit but out of personal interest and benefit for the whole F95zone
-community. Donations are although greatly appreciated and aid the development of this software. You can find donation links [here](https://linktr.ee/WillyJL).
-
-If you find bugs or have some feedback, don't be afraid to let me know either on GitHub (using issues or pull requests) or on F95zone (in the thread comments or in
-direct messages).
-
-Please note that this software is not ( yet ;) ) officially affiliated with the F95zone platform.
-
-## Cool people:
-
-Supporters:
-
-[FaceCrap](https://f95zone.to/members/2913051/) -
-[kitty_kt](https://f95zone.to/members/97672/) -
-[laseracid](https://f95zone.to/members/97860/) -
-[ascsd](https://f95zone.to/members/3977760/) -
-[GioBol](https://f95zone.to/members/3716618/) -
-[Turribel](https://f95zone.to/members/2114990/) -
-[leavy](https://f95zone.to/members/2642332/) -
-[WhiteVanDaycare](https://f95zone.to/members/3509231/) -
-[Jarulf](https://f95zone.to/members/2709937/) -
-[salkrim](https://f95zone.to/members/3899517/) -
-[rozzic](https://f95zone.to/members/449099/) -
-[Belfaier](https://f95zone.to/members/7363156/) -
-[warez_gamez](https://f95zone.to/members/81517/) -
-[DeadMoan](https://f95zone.to/members/4392187/) -
-And 4 anons
-
-Contributors:
-
-- [r37r05p3C7](https://github.com/r37r05p3C7): Tab idea and customization, timeline, many extension features
-- [littleraisins](https://github.com/littleraisins): Fixes, features and misc ideas from the (defunct) 'X' fork
-- [FaceCrap](https://github.com/FaceCrap): Multiple small fixes, improvements and finetuning
-- [blackop](https://github.com/disaster2395): Proxy support, temporary ratelimit fix, linux login fix
-- [Crykon](https://github.com/Crykon): Preview images
-- [cicklolwut](https://github.com/cicklolwut): Security fixes, Linux wine/proton config, playtime stats
-- [Sam](https://f95zone.to/members/7899/): Support from F95zone side to make much of this possible
-- [batblue](https://f95zone.to/members/4143766/): macOS suppport and feedback guy
-- [unroot](https://f95zone.to/members/1585550/): Linux support and feedback guy
-- [ploper26](https://f95zone.to/members/1295524/): Suggested HEAD requests for refreshing (no longer used)
-- [ascsd](https://f95zone.to/members/3977760/): Helped with brainstorming on some issues and gave some tips
-- [GR3ee3N](https://github.com/GR3ee3N): Optimized build workflows and other PRs
-- See the full list [here](https://github.com/WillyJL/F95Checker/graphs/contributors?all=1)
-
-Community:
-
-[abada25](https://f95zone.to/members/1679118/) -
-[AtotehZ](https://f95zone.to/members/840616/) -
-[bitogno](https://f95zone.to/members/605466/) -
-[BrockLanders](https://f95zone.to/members/2707184/) -
-[d_pedestrian](https://f95zone.to/members/2616862/) -
-[Danv](https://f95zone.to/members/2758580/) -
-[DarK x Duke](https://f95zone.to/members/1852502/) -
-[Dfour](https://f95zone.to/members/114089/) -
-[Dukez](https://f95zone.to/members/3182770/) -
-[Fauno36](https://f95zone.to/members/6131511/) -
-[harem.king](https://f95zone.to/members/6410446/) -
-[MillenniumEarl](https://f95zone.to/members/1470797/) -
-[simple_human](https://f95zone.to/members/1056502/) -
-[SirKat](https://f95zone.to/members/1876442/) -
-[SmurfyBlue](https://f95zone.to/members/671/) -
-[WhiteVanDaycare](https://f95zone.to/members/3509231/) -
-[yohudood](https://f95zone.to/members/26049/) -
-And others that I might be forgetting
+# F95Checker Enhanced
+
+**[Français](README.fr.md)** · **[User guide](docs/USER_GUIDE.md)** · **[Patch notes](CHANGELOG.md)** · **[Third-party notices](THIRD_PARTY_NOTICES.md)**
+
+A fork of **[F95Checker](https://github.com/WillyJL/F95Checker) by WillyJL** (version 11.2.1) that turns it into a full
+manager for the games **installed on your PC**: it finds them on your drives, tells you which ones really need an update,
+installs updates and mods, and adds tools for Ren'Py games (cheats, HD pictures, 60 fps animations, 3D and living
+pictures), a connected-toy sync, privacy tools and housekeeping.
+
+Everything F95Checker already does (tracking threads, notifications, browser extension...) is unchanged.
+
+![Main window](docs/images/main-grid.png)
+
+## Download
+
+**[Latest release](https://github.com/Alex200295/F95Checker_Enhanced/releases/latest)** → `F95Checker_Enhanced-Windows.zip`.
+
+1. Unzip it into its own folder, for example `C:\Programs\F95Checker Enhanced` (not inside `%APPDATA%\f95checker`, and
+   not in a folder with other files: an in-app update replaces the whole folder).
+2. Run `F95Checker.exe`.
+
+That's all: **Real-ESRGAN, RIFE, ffmpeg and the Depth Anything V2 Small model are included** in the `tools` folder, and
+ONNX Runtime (graphics card) in the program itself. Nothing else to download.
+
+**Already using F95Checker?** F95Checker Enhanced uses the same data folder (`%APPDATA%\f95checker`): your library,
+settings and login are there at the first start. No new database column: you can go back to the official version at any
+time without losing anything. Close the official F95Checker first, and copy `db.sqlite3` somewhere safe if you want a
+backup.
+
+Requirements: Windows 10/11 64-bit. A graphics card with Vulkan (any recent NVIDIA / AMD / Intel) for the AI features.
+Linux and macOS builds are made too, without the bundled tools (the features that need them say so).
+
+## What it adds
+
+| | |
+|---|---|
+| **Local library scan** | Executables found by themselves, **Installed** ticked when your copy is the latest, **Installed On** date, size, real engine, cheats present, last played (from the saves), old versions and duplicates to delete |
+| **Updates** | **Updates to do** list with the changelog since your version, **Download** in your browser, **Import Update** from the archive (saves backed up, folder renamed), downloads watcher |
+| **Library** | Hover slideshow, To play shelf, Continue banner, sharper banners, statistics, What to play tonight? |
+| **Ren'Py** | Console, **cheat sheet**, **in-game cheat menu (Shift+C)**, gallery unlock, rollback always allowed, shared preferences, **What went wrong?** after a crash, mod installer |
+| **HD & 60 fps** | HD pictures for Ren'Py 8.4+ games made for a smaller screen, animations at twice the frame rate (RIFE), Undo |
+| **3D & living pictures** | Depth computed by your graphics card: subtle "living" pictures, or 3D side by side for VR (Half SBS), **Shift+P** in game |
+| **Connected toy** | Intiface Central: Ren'Py animation sync from scripts generated from the animations themselves, rumble, sound mode, strokers, patterns, safety stops |
+| **Disks** | Compression, drives balance, clean up, tidy up, shared Ren'Py engine files |
+| **Privacy** | Discretion key, **Safe screen** (Ctrl+Alt+B), PIN lock |
+
+Full list: **[patch notes](CHANGELOG.md)**. How to use each feature: **[user guide](docs/USER_GUIDE.md)**.
+
+## Good to know
+
+- **It changes files in your game folders** (only Ren'Py games, only small scripts named `zz_f95checker_*.rpy` /
+  `zz_f95toy.rpy`, plus what you ask for: HD pictures, 60 fps videos, depth maps, mods). Every addition can be removed
+  (right click on the game, or untick the option in *Library tools → Settings*), and the game's own files are never
+  overwritten without a backup. Save your games before trying a cheat.
+- The console, the in-game cheat menu and the toy sync script are **added to every Ren'Py game by default** at each
+  Refresh: untick *Cheats in Ren'Py games*, *Cheat menu in Ren'Py games* (Library tools → Settings) and *Toy sync on for
+  every game* (Toy panel) if you don't want them.
+- HD & 60 fps and 3D pictures take time (hours for a big library) and disk space; they stop writing on a drive with less
+  than 15 GB free.
+- The connected-toy features need **[Intiface Central](https://intiface.com/central)** (free) and are off until a toy is
+  connected.
+
+## Credits and license
+
+- **F95Checker** is made by **WillyJL** and contributors: https://github.com/WillyJL/F95Checker — please support the
+  original project: https://linktr.ee/WillyJL. **Do not report bugs of the Enhanced features to WillyJL**: open an issue
+  here instead.
+- F95Checker Enhanced: fork by **Alex200295**, same license, **GPLv3** (`LICENSE`).
+- Bundled tools and their licenses: **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)** (Real-ESRGAN, RIFE, FFmpeg,
+  Depth Anything V2 Small, ONNX Runtime).
+- Not affiliated with F95zone.

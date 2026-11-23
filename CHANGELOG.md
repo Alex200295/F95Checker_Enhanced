@@ -1,3 +1,65 @@
+## 11.2.1.1
+
+**F95Checker Enhanced 1**, based on F95Checker 11.2.1 by WillyJL. Everything below is new compared to the official 11.2.1.
+Your F95Checker data (`%APPDATA%\f95checker`) is used as it is: no new database column, going back to the official version loses nothing.
+
+### Install:
+- The Windows zip ships every tool the new features use (Real-ESRGAN, RIFE, ffmpeg, Depth Anything V2 Small, ONNX Runtime DirectML): unzip, run, nothing else to install
+- In-app updates come from the F95Checker Enhanced releases
+
+### Local library scan (runs after every full Refresh):
+- Executables found by themselves: kept when valid, relocated when you moved or renamed a folder, found by name or acronym (`HoS` = House of Shinobi); best exe picked (64-bit, no crash handler / installer, Unity and Godot recognised)
+- A newer folder of the same game on your drives: the exe switches to it
+- **Installed** ticked / unticked by itself from the version in folder names, or from file dates
+- New columns: **Installed On** (when your version's files arrived on the disk, saves and logs ignored), **Size On Disk**, **Engine (detected)**, **Cheats**, **Toy**
+- **Last Launched** read from saves and logs (Ren'Py, RPG Maker, Unity, Unreal): works for games started from Explorer too
+- **Delete old versions**: older folders and duplicate copies of a game, to the recycle bin or for good, saves copied first
+- Ren'Py mods and RPG Maker saves carried over to the new version; mods older than the update flagged (Disable / keep / find an update)
+- Library folders deduced from your executables, category sub-folders supported; right click > **Scan Local Copy**
+
+### Updates:
+- **Updates to do** window: most recently played first, FINAL VERSION mark, changelog since your version, low-space warning, Ignore, Download (host page in your browser, or JDownloader), Import
+- **Import Update** (.zip / .7z / .rar): preview, extraction on the same drive, running-game check, saves backup, folder renamed to the new version, Installed ticked, old Ren'Py engine files set aside
+- **Downloads watcher**: a finished archive that looks like one of your games pops up with **Import into <game>**
+- **Finished games** review: mark finished, optionally uninstall (saves backed up)
+
+### Library:
+- Hover slideshow of the thread screenshots, **To play** shelf with UPDATE / NEW badges, **Continue** banner, game colours
+- **Sharper banners** (Real-ESRGAN, originals never touched), **What to play tonight?**, **Statistics** (play time per week, developers, tags, engines, space per drive)
+- **Library tools** sidebar and settings window
+
+### Ren'Py tools:
+- Console (Shift+O) and developer menu in every Ren'Py game by default, off per game
+- **Cheat sheet**: the game's variables read from .rpy / .rpyc / .rpa (nothing run), sorted (money, relationships, stats, items, flags), copy line, search by value
+- **In-game cheat menu (Shift+C)**: -10 / -1 / +1 / +10 / MAX buttons and switches, rewritten after each update
+- **Unlock gallery & replays** (reversible), **always allow rollback and skipping**, shared preferences (skip unread text, auto-forward, volumes, window mode) applied once per game
+- **What went wrong?** after a crash: the error explained, the file at fault and a one-click fix when there is one (mixed engine files, broken mod, duplicated script / "appeared twice", missing files...)
+- **Install a mod** (archive or folder) and **Uninstall** it later; **Mods & extras** links from the threads; **Recommendations** from your ratings and play time
+- **HD & 60 fps**: HD pictures for Ren'Py 8.4+ games made for less than your screen (1080p / 1440p / 2160p), x2 fps animations by RIFE (same length, toy sync unchanged), Undo per game, **Start all** for the library (stops at 15 GB free per drive)
+- **3D & living pictures** (Ren'Py 8.1+): depth maps computed once on the graphics card, **Shift+P** in game: living pictures (gentle, mouse-driven, subject stays still) / 3D side by side for VR (Half SBS) / off; animations included
+- **Ren'Py engine sharing**: identical engine files stored once per drive (NTFS hard links), Undo
+- **Status** tab in the game info: everything added or found for the game, with its button
+
+### Connected toy (Intiface Central):
+- Ren'Py animation sync: scripts generated from the animations themselves (motion analysis, funscript format, loops respected), all games on several cores
+- Controller rumble (Game Haptics Router), sound-driven mode, games with built-in toy support detected
+- Strokers (The Handy, Keon...) follow the script positions; patterns with editor; downloaded .funscript files always win
+- Safety: emergency stop (Pause / Ctrl+Alt+End / STOP TOY), soft start, caps, session limit, pause when the game is not in front, stop on quit
+
+### Disks and housekeeping:
+- **Compression** (Windows LZX) with estimated gain, Undo
+- **Drives balance**: least recently played games moved to the emptier drive, copy verified before the old folder is deleted
+- **Clean up** (installed archives, Ren'Py caches, leftovers), **Tidy up** (category folders learnt from how you sort your games)
+
+### Privacy:
+- **Discretion key** (Ctrl+Alt+H): stops the toy, minimises the games and F95Checker, mutes the sound
+- **Safe screen** (Ctrl+Alt+B): banners, names, tags and screenshots hidden in the interface
+- **PIN lock** (startup, idle, minimised), neutral window title, no preview / no capture option
+
+### Display:
+- **Display profile** per game: Lossless Scaling (scaling or frame generation), ReShade on / off at launch
+- DLSS 5 kit (advanced, your own kit only, not shipped): install / remove per game, off by default
+
 ## 11.2.1
 
 ### Fixed:

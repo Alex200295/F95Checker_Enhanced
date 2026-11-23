@@ -303,7 +303,7 @@ _model_cache: tuple[float, str, pathlib.Path | None] = (float("-inf"), "", None)
 
 
 def find_model() -> pathlib.Path | None:
-    """Library tools path (file or folder), else <data>/depth, Downloads (2 levels deep)."""
+    """Library tools path (file or folder), else <app>/tools/depth (shipped with the release), <data>/depth, Downloads (2 levels deep)."""
     global _model_cache
     custom = prefs()["depth_model_path"].strip().strip('"')
     if _model_cache[1] == custom and time.monotonic() - _model_cache[0] < 30:
@@ -316,7 +316,7 @@ def find_model() -> pathlib.Path | None:
         elif path.is_dir():
             found = next((p for n in MODEL_NAMES + ("model.onnx", "model_fp16.onnx") for p in [path / n] if p.is_file()), None)
     else:
-        for folder in (globals.data_path / "depth", pathlib.Path.home() / "Downloads", globals.data_path):
+        for folder in (globals.self_path / "tools" / "depth", globals.data_path / "depth", pathlib.Path.home() / "Downloads", globals.data_path):
             for pattern in [n for n in MODEL_NAMES] + [f"*/{n}" for n in MODEL_NAMES] + [f"*/*/{n}" for n in MODEL_NAMES]:
                 with contextlib.suppress(OSError):
                     found = next((p for p in folder.glob(pattern) if p.is_file()), None)
@@ -702,7 +702,7 @@ def open_popup(game: Game):
     def content():
         imgui.text_disabled("Each picture and animation of the game gets a depth map, made once by your graphics card.\n"
                             "In the game, Shift+P: off -> living pictures (the view follows the mouse slowly, the subject stays still)\n"
-                            "    -> 3D side by side (Quest 3 + Virtual Desktop: 3D mode \"Half SBS\") -> off.\n"
+                            "    -> 3D side by side (VR headset, e.g. Quest 3 + Virtual Desktop: 3D mode \"Half SBS\") -> off.\n"
                             "The game's own files and your saves are not touched.")
         imgui.separator()
         root = game_root(game)

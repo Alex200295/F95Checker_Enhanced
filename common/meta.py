@@ -2,10 +2,10 @@ import os
 import pathlib
 import sys
 
-version = "11.2.1"
-release = True  # Installed On mod: behave like the official 11.2.1 release (no "update from beta" prompt)
+version = "11.2.1.1"  # F95Checker Enhanced: <WillyJL's version>.<Enhanced release>, = the GitHub release tag
+release = True  # F95Checker Enhanced: behave like a release (no "update from beta" prompt)
 build_number = 0
-version_name = f"{version}{'' if release else ' beta'}{'' if release or not build_number else ' ' + str(build_number)}" + " + Installed On + Toy"
+version_name = f"{version}{'' if release else ' beta'}{'' if release or not build_number else ' ' + str(build_number)}" + " Enhanced"
 rpc_port = 57095
 rpc_url = f"http://127.0.0.1:{rpc_port}"
 

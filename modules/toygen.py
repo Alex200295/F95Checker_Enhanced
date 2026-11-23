@@ -151,6 +151,13 @@ def script_name(key: str) -> str:
 def find_ffmpeg(custom: str = "") -> str | None:
     if custom and pathlib.Path(custom).is_file():
         return custom
+    # shipped with the release (<app>/tools/ffmpeg/bin): a recent ffmpeg, before an older one on PATH
+    # (common.meta and not modules.globals: this module also runs in the worker processes)
+    from common.meta import self_path
+    for name in ("ffmpeg.exe", "ffmpeg"):
+        for bundled in (self_path / "tools" / "ffmpeg" / "bin" / name, self_path / "tools" / "ffmpeg" / name):
+            if bundled.is_file():
+                return str(bundled)
     found = shutil.which("ffmpeg")
     if found:
         return found

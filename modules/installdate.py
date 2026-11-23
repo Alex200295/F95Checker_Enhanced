@@ -14,7 +14,7 @@ For every game, from the folders of your library on disk:
     (creation / modification times, ignoring saves, logs, caches, screenshots).
 
 Library folders are found automatically: "Set exe dir" + the "<drive>\\<folder>" of
-every absolute executable (e.g. E:\\JeuxEr, F:\\JeuxE...). Game folders are searched
+every absolute executable (e.g. E:\\Games, F:\\AdultGames...). Game folders are searched
 at depth 1 and 2 under them (so category folders like "HD GAMES\\<game>" work).
 
 Runs automatically after each full Refresh, and manually from Settings > Manage >

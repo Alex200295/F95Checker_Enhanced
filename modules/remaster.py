@@ -107,7 +107,7 @@ def _find(names: tuple[str, ...], custom: str, sub: str, depth: int = 2) -> path
         for candidate in ([path / n for n in names] if path.is_dir() else [path]):
             if candidate.is_file():
                 return candidate
-    for folder in (globals.data_path / sub, pathlib.Path.home() / "Downloads", globals.data_path):
+    for folder in (globals.self_path / "tools" / sub, globals.data_path / sub, pathlib.Path.home() / "Downloads", globals.data_path):
         for level in range(depth + 1):
             for name in names:
                 with contextlib.suppress(OSError):
@@ -434,7 +434,7 @@ def analyse(game: Game) -> Analysis:
         a.hd_why = "game size not found in its scripts"
     elif a.size[1] >= hd_target():
         a.hd_why = (f"already made for {a.size[0]}x{a.size[1]}: nothing to gain on a {hd_target()}p screen"
-                    + (" (Library tools > Settings > HD for: 1440p / 2160p for the Quest 3)" if hd_target() == 1080 else ""))
+                    + (" (Library tools > Settings > HD for: 1440p / 2160p for a 1440p / 4K screen or a VR headset)" if hd_target() == 1080 else ""))
     else:
         a.hd_ok = True
     images = list_images(game_dir) if a.hd_ok else []
@@ -576,7 +576,9 @@ def make_60fps(media: Media, dst: pathlib.Path, t: dict) -> tuple[str, dict]:
             if error and ("fps_mode" in error or "Option not found" in error or "Unrecognized option" in error):
                 error = _run([t["ffmpeg"], "-v", "error", "-y", "-i", src, "-vsync", "0", work / "in" / "%08d.png"], 1800)
             if not error:
-                error = _run([t["rife"], "-i", work / "in", "-o", work / "mid"], 3600)
+                # the release ships only the rife-v4.6 model (better and lighter): use it when it sits next to the exe
+                model = pathlib.Path(t["rife"]).parent / "rife-v4.6"
+                error = _run([t["rife"], "-i", work / "in", "-o", work / "mid", *(["-m", model] if model.is_dir() else [])], 3600)
             if not error:
                 error = _run([t["ffmpeg"], "-v", "error", "-y", "-framerate", str(target), "-i", work / "mid" / "%08d.png",
                               *codec, "-pix_fmt", "yuv420p", out], 3600)
@@ -938,7 +940,7 @@ def open_popup(game: Game):
             sampled = f"{a.videos_slow} of {a.videos_sampled} checked are below 50 fps" if a.videos_sampled else "fps not checked (ffprobe missing)"
             _, state["fps"] = imgui.checkbox(f"Smoother animations (x2 fps: 30 -> 60, 24 -> 48): {a.videos} videos, {sampled}###rm_fps", state["fps"])
             if not t["ffmpeg"]:
-                imgui.text_colored("   ffmpeg not found: install it (ffmpeg.exe in PATH, Downloads or C:\\ffmpeg\\bin).", 0.95, 0.6, 0.2)
+                imgui.text_colored("   ffmpeg not found: it ships with F95Checker (tools\\ffmpeg), else put ffmpeg.exe in PATH, Downloads or C:\\ffmpeg\\bin.", 0.95, 0.6, 0.2)
                 state["fps"] = False
             else:
                 imgui.text_disabled("   " + ("RIFE found: in-between frames computed by the graphics card (best)." if t["rife"] else

@@ -135,12 +135,15 @@ api_fast_check_url = api_host + "/fast?ids={ids}"
 api_full_check_url = api_host + "/full/{id}?ts={ts}"
 api_fast_check_max_ids = 10
 
-app_update_stable_latest = "https://api.github.com/repos/WillyJL/F95Checker/releases/latest"
-app_update_stable_changelog = "https://raw.githubusercontent.com/WillyJL/F95Checker/refs/tags/{tag_name}/CHANGELOG.md"
-app_update_beta_runs = "https://api.github.com/repos/WillyJL/F95Checker/actions/workflows/build.yml/runs?status=success&per_page=1"
-app_update_beta_artifacts = "https://api.github.com/repos/WillyJL/F95Checker/actions/runs/{run_id}/artifacts"
-app_update_beta_download = "https://github.com/WillyJL/F95Checker/suites/{check_suite_id}/artifacts/{artifact_id}"
-app_update_beta_changelog = "https://raw.githubusercontent.com/WillyJL/F95Checker/{head_sha}/CHANGELOG.md"
+# F95Checker Enhanced: updates come from the fork's releases (not WillyJL's, which would remove the Enhanced features)
+app_update_repo = "Alex200295/F95Checker_Enhanced"
+app_update_asset_prefix = app_update_repo.split("/")[1].lower()  # release zips: F95Checker_Enhanced-Windows.zip...
+app_update_stable_latest = f"https://api.github.com/repos/{app_update_repo}/releases/latest"
+app_update_stable_changelog = f"https://raw.githubusercontent.com/{app_update_repo}/refs/tags/{{tag_name}}/CHANGELOG.md"
+app_update_beta_runs = f"https://api.github.com/repos/{app_update_repo}/actions/workflows/build.yml/runs?status=success&per_page=1"
+app_update_beta_artifacts = f"https://api.github.com/repos/{app_update_repo}/actions/runs/{{run_id}}/artifacts"
+app_update_beta_download = f"https://github.com/{app_update_repo}/suites/{{check_suite_id}}/artifacts/{{artifact_id}}"
+app_update_beta_changelog = f"https://raw.githubusercontent.com/{app_update_repo}/{{head_sha}}/CHANGELOG.md"
 github_login_page = "https://github.com/login"
 
 
@@ -1349,7 +1352,7 @@ async def check_updates():
         asset_url = None
         asset_name = None
         asset_size = None
-        asset_type = "f95checker-" + (globals.os.name.lower() if globals.frozen else "source")
+        asset_type = app_update_asset_prefix + "-" + (globals.os.name.lower() if globals.frozen else "source")
         if globals.frozen and globals.os is Os.MacOS:
             asset_type += "-arm64" if platform.machine().lower() == "arm64" else "-x64"
         asset_artifact = None

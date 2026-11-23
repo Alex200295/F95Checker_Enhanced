@@ -1809,7 +1809,7 @@ async def _on_game_launched(game: Game):
         if kind == "lovense":
             utils.push_popup(msgbox.msgbox, "Toy - Lovense game",
                              f"{game.name} drives Lovense toys itself through the official Lovense app.\n\n"
-                             " 1. Open Lovense Remote on the PC (or phone), connect the Max 2, enable Game Mode;\n"
+                             " 1. Open Lovense Remote on the PC (or phone), connect your toy, enable Game Mode;\n"
                              " 2. In the game, enter the code / IP shown by Lovense Remote if asked.\n\n"
                              "F95Checker disconnects from Intiface. If Lovense Remote cannot see the toy,\n"
                              "quit Intiface Central (it may still hold the Bluetooth connection).", MsgBox.info)
@@ -2101,7 +2101,7 @@ def _draw_panel():
     elif st["section"] == 3:
         imgui.text(
             "1. Install Intiface Central (intiface.com/central). In its settings, enable\n"
-            "   \"Start server when Intiface Central launches\". Turn the Lovense Max 2 on (Bluetooth).\n"
+            "   \"Start server when Intiface Central launches\". Turn your toy on (Bluetooth).\n"
             "2. Right click a game > Toy > tick \"Sync with my toy\". Launch the game from F95Checker.\n"
             "   - Ren'Py games: a small script is added to the game, F95Checker plays a script per animation.\n"
             "     Generate them all in advance: right click > Toy > Generate scripts (a few minutes).\n"
