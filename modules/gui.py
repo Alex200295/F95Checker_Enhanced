@@ -4603,15 +4603,25 @@ class MainGUI():
                     p["depth_model_path"] = value.strip().strip('"')
                     installdate.save_prefs()
                     depth.forget_model()
-                draw_settings_label("Living pictures:", "How far near things move in living pictures (% of the picture width).\n"
-                                                        "Applied to every game that has them (restart the game).")
+                draw_settings_label("Living pictures:", "How far the background slides behind the subject in living pictures (% of the width).\n"
+                                                        "0.6 % by default: more can be tiring. Applied to every game that has them (restart the game).")
                 imgui.set_next_item_width(right_width)
-                changed, value = imgui.slider_float("###lt_depth_live", float(p.get("depth_live_amp", 1.2)), 0.3, 3.0, "%.1f %%")
+                changed, value = imgui.slider_float("###lt_depth_live", float(depth.prefs()["depth_live_amp"]), 0.2, 2.0, "%.1f %%")
                 if imgui.is_item_deactivated():
                     depth.refresh_scripts()
                 if changed:
                     p["depth_live_amp"] = round(value, 1)
                     installdate.save_prefs()
+                draw_settings_label("Living motion:", "Mouse: the view turns slowly where the mouse goes, still when the mouse is still (most comfortable).\n"
+                                                      "Sway: a very slow drift by itself. Restart the game after a change.")
+                imgui.set_next_item_width(right_width)
+                motions = list(depth.LIVE_MOTIONS)
+                current = motions.index(depth.prefs()["depth_live_motion"]) if depth.prefs()["depth_live_motion"] in motions else 0
+                changed, index = imgui.combo("###lt_depth_motion", current, ["follows the mouse", "slow sway"])
+                if changed:
+                    p["depth_live_motion"] = motions[index]
+                    installdate.save_prefs()
+                    depth.refresh_scripts()
                 draw_settings_label("3D depth:", "Separation between the two eyes in 3D side by side (% of the picture width).\n"
                                                  "More = stronger relief, but tiring above 4 %. Restart the game after a change.")
                 imgui.set_next_item_width(right_width)

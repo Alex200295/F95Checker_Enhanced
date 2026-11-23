@@ -6,7 +6,9 @@ Depth Anything V2 Small (ONNX Runtime, DirectML), and stored in game\\_f95depth.
 (zz_f95checker_depth.rpy) uses them, Shift+P in the game switching between:
     off -> living pictures (near things move slightly over the background, slow camera breathing)
         -> 3D side by side (Virtual Desktop on the Quest 3: 3D mode "Half SBS") -> off
-Ren'Py 8.1 or newer (shaders on every layer). Videos are not converted (pictures only).
+Ren'Py 8.1 or newer (shaders on every layer). Animations get the depth of a frame from their middle.
+Depth maps are centred on the main subject (it stays still / on the screen plane) and their near edges are grown
+a little before smoothing (no halo around characters).
 Nothing written in the game's own files or saves: Remove deletes game\\_f95depth and the script.
 """
 import asyncio
@@ -28,13 +30,19 @@ from modules import (
     globals,
     installdate,
     remaster,
+    toygen,
     utils,
 )
 
 LOG_PREFIX = "[Depth]"
 DEPTH_DIR = "_f95depth"
 SCRIPT_FILE = "zz_f95checker_depth.rpy"
-MODEL_NAMES = ("depth_anything_v2_small.onnx", "depth_anything_v2_vits.onnx", "depth_anything_v2_small_fp16.onnx")
+# Base (finer details, cleaner edges) preferred when both are there; Small is enough and 4 times faster
+MODEL_NAMES = ("depth_anything_v2_base.onnx", "depth_anything_v2_vitb.onnx",
+               "depth_anything_v2_small.onnx", "depth_anything_v2_vits.onnx", "depth_anything_v2_small_fp16.onnx")
+DEPTH_VERSION = "2"             # depth maps made before (version file missing / older) are made again
+VERSION_FILE = "version.txt"
+LIVE_MOTIONS = ("mouse", "sway")
 MIN_VERSION = (8, 1)
 MIN_SIDE = 200                  # smaller pictures (buttons, icons) are left out
 MAX_DEPTH_WIDTH = 640           # depth maps are smooth: stored small (about 15 KB each)
@@ -42,15 +50,18 @@ NET_SIDE = 518                  # Depth Anything input: shorter side, multiple o
 
 SCRIPT = r'''# Added by F95Checker (right click > 3D & living pictures...). Delete this file (and game\_f95depth) to remove it.
 # Shift+P in the game: off -> living pictures -> 3D side by side (Virtual Desktop: 3D mode "Half SBS") -> off.
-# Uses the depth maps in game\_f95depth (one per picture, made by F95Checker). Nothing is written in your saves.
+# Uses the depth maps in game\_f95depth (one per picture and per animation, made by F95Checker). Nothing is written in your saves.
 init 999 python:
     import collections as _f95d_collections
+    import math as _f95d_math
+    import time as _f95d_time
     import renpy.display.im as _f95d_im
     import renpy.display.render as _f95d_R
 
-    _F95D_LIVE_AMP = F95D_LIVE_AMP_VALUE      # living pictures: how far near things move (share of the picture width)
-    _F95D_3D_AMP = F95D_3D_AMP_VALUE          # 3D: separation between the two eyes (share of the picture width)
-    _F95D_FOCUS = 0.35                        # 3D: depth that stays on the screen plane (0 = far, 1 = near)
+    _F95D_LIVE_AMP = F95D_LIVE_AMP_VALUE      # living pictures: how far the background moves behind the subject (share of the width)
+    _F95D_3D_AMP = F95D_3D_AMP_VALUE          # 3D: separation between the two eyes (share of the width)
+    _F95D_MOTION = "F95D_MOTION_VALUE"        # living pictures: "mouse" = the view follows the mouse slowly, "sway" = slow drift
+    _F95D_FOCUS = 0.5                         # depth maps are centred on the main subject: it stays still / on the screen plane
     _F95D_MODES = ("off", "live", "3d")
     _F95D_NAMES = {"off": "3D & living pictures: off", "live": "Living pictures", "3d": "3D side by side (Half SBS)"}
 
@@ -62,12 +73,16 @@ init 999 python:
             def __init__(self):
                 self.pass_depth = False
                 self.known = {}
+                self.view = (0.0, 0.0)
+                self.view_time = 0.0
 
             def mode(self):
                 m = persistent._f95_depth_mode
                 return m if m in _F95D_MODES else "off"
 
             def depth_for(self, filename):
+                if not isinstance(filename, str):
+                    filename = filename[0] if filename else ""
                 if filename in self.known:
                     return self.known[filename]
                 found = None
@@ -79,38 +94,61 @@ init 999 python:
                 self.known[filename] = found
                 return found
 
+            def view_dir(self):
+                """Where the 'camera' looks, -1..1 on each axis, smoothed (no sudden move)."""
+                now = _f95d_time.time()
+                if now - self.view_time < 0.004:
+                    return self.view
+                if _F95D_MOTION == "mouse":
+                    mx, my = renpy.get_mouse_pos()
+                    tx = max(-1.0, min(1.0, (float(mx) / config.screen_width - 0.5) * 2.0))
+                    ty = max(-1.0, min(1.0, (float(my) / config.screen_height - 0.5) * 2.0)) * 0.6
+                else:
+                    tx = _f95d_math.sin(now * 2.0 * _f95d_math.pi / 24.0)
+                    ty = 0.3 * _f95d_math.sin(now * 2.0 * _f95d_math.pi / 37.0)
+                dt = min(0.1, max(0.0, now - self.view_time))
+                k = 1.0 - _f95d_math.exp(-dt * 2.2)
+                vx, vy = self.view
+                self.view = (vx + (tx - vx) * k, vy + (ty - vy) * k)
+                self.view_time = now
+                return self.view
+
         _f95d_state = _F95DepthState()
 
         _f95d_vars = """
             uniform sampler2D tex0;
             uniform sampler2D tex1;
-            uniform float u_time;
             uniform float u_f95_amp;
             uniform float u_f95_focus;
+            uniform vec2 u_f95_dir;
             attribute vec2 a_tex_coord;
             varying vec2 v_tex_coord;
         """
         renpy.register_shader("f95.plain", variables=_f95d_vars, vertex_200="v_tex_coord = a_tex_coord;",
                               fragment_200="gl_FragColor = texture2D(tex0, v_tex_coord);")
-        renpy.register_shader("f95.black", variables=_f95d_vars, vertex_200="v_tex_coord = a_tex_coord;",
-                              fragment_200="gl_FragColor = vec4(0.0, 0.0, 0.0, texture2D(tex0, v_tex_coord).a);")
+        # no depth map: the picture stays on the screen plane (neither pushed back nor popping out)
+        renpy.register_shader("f95.flat", variables=_f95d_vars, vertex_200="v_tex_coord = a_tex_coord;", fragment_200="""
+            float a = texture2D(tex0, v_tex_coord).a;
+            gl_FragColor = vec4(u_f95_focus * a, u_f95_focus * a, u_f95_focus * a, a);
+        """)
+        # living pictures: the subject stays still, what is behind / in front of it slides a little (parallax)
         renpy.register_shader("f95.live", variables=_f95d_vars, vertex_200="v_tex_coord = a_tex_coord;", fragment_200="""
-            vec2 dir = vec2(sin(u_time * 0.55), 0.6 * sin(u_time * 0.41 + 1.3)) * u_f95_amp;
-            vec2 base = 0.5 + (v_tex_coord - 0.5) * (1.0 - u_f95_amp);
+            vec2 base = 0.5 + (v_tex_coord - 0.5) * (1.0 - 2.0 * u_f95_amp);
             vec2 uv = base;
-            for (int i = 0; i < 3; i++) {
+            for (int i = 0; i < 4; i++) {
                 vec4 dep = texture2D(tex1, clamp(uv, 0.0, 1.0));
-                float d = dep.a > 0.0 ? dep.r / dep.a : 0.0;
-                uv = base - (d - 0.5) * dir;
+                float d = dep.a > 0.0 ? dep.r / dep.a : u_f95_focus;
+                uv = base - (d - u_f95_focus) * u_f95_dir;
             }
             gl_FragColor = texture2D(tex0, clamp(uv, 0.0, 1.0));
         """)
         renpy.register_shader("f95.sbs", variables=_f95d_vars, vertex_200="v_tex_coord = a_tex_coord;", fragment_200="""
             float eye = v_tex_coord.x < 0.5 ? 1.0 : -1.0;
             vec2 uv = vec2(v_tex_coord.x < 0.5 ? v_tex_coord.x * 2.0 : v_tex_coord.x * 2.0 - 1.0, v_tex_coord.y);
-            float s = (texture2D(tex1, uv).r - u_f95_focus) * u_f95_amp * 0.5;
-            s = (texture2D(tex1, clamp(uv - vec2(eye * s, 0.0), 0.0, 1.0)).r - u_f95_focus) * u_f95_amp * 0.5;
-            s = (texture2D(tex1, clamp(uv - vec2(eye * s, 0.0), 0.0, 1.0)).r - u_f95_focus) * u_f95_amp * 0.5;
+            float s = 0.0;
+            for (int i = 0; i < 4; i++) {
+                s = (texture2D(tex1, clamp(uv - vec2(eye * s, 0.0), 0.0, 1.0)).r - u_f95_focus) * u_f95_amp * 0.5;
+            }
             gl_FragColor = texture2D(tex0, clamp(uv - vec2(eye * s, 0.0), 0.0, 1.0));
         """)
 
@@ -125,32 +163,40 @@ init 999 python:
                 rv.add_uniform(k, v)
             return rv
 
+        def _f95d_wrap(d, cr, depth, st, at):
+            """A picture / animation drawn with its depth: depth pass of 3D, or living pictures."""
+            state = _f95d_state
+            cw, ch = cr.get_size()
+            if state.pass_depth:
+                if depth is None:
+                    return _f95d_textured([cr], cw, ch, "f95.flat", {"u_f95_focus": _F95D_FOCUS})
+                dr = _f95d_im.render_for_texture(depth, cw, ch, st, at)
+                return _f95d_textured([dr], cw, ch, "f95.plain", {})
+            if state.mode() == "live" and depth is not None:
+                dr = _f95d_im.render_for_texture(depth, cw, ch, st, at)
+                fade = min(1.0, st / 1.5)
+                fade = fade * fade * (3.0 - 2.0 * fade)          # a new picture starts still, the motion eases in
+                vx, vy = state.view_dir()
+                amp = _F95D_LIVE_AMP * fade
+                renpy.redraw(d, 0)
+                return _f95d_textured([cr, dr], cw, ch, "f95.live",
+                                      {"u_f95_amp": amp, "u_f95_focus": _F95D_FOCUS, "u_f95_dir": (vx * amp, vy * amp)})
+            return cr
+
         _f95d_orig_image_render = _f95d_im.Image.render
 
         def _f95d_image_render(self, w, h, st, at):
             cr = _f95d_orig_image_render(self, w, h, st, at)
             state = _f95d_state
-            mode = state.mode()
-            if mode == "off" and not state.pass_depth:
+            if state.mode() == "off" and not state.pass_depth:
                 return cr
             filename = getattr(self, "filename", "") or ""
             if filename.startswith("_f95depth/"):
                 return cr
             try:
-                depth = state.depth_for(filename)
-                cw, ch = cr.get_size()
-                if state.pass_depth:
-                    if depth is None:
-                        return _f95d_textured([cr], cw, ch, "f95.black", {})
-                    dr = _f95d_im.render_for_texture(depth, cw, ch, st, at)
-                    return _f95d_textured([dr], cw, ch, "f95.plain", {})
-                if mode == "live" and depth is not None:
-                    dr = _f95d_im.render_for_texture(depth, cw, ch, st, at)
-                    renpy.redraw(self, 0)
-                    return _f95d_textured([cr, dr], cw, ch, "f95.live", {"u_f95_amp": _F95D_LIVE_AMP, "u_f95_focus": _F95D_FOCUS})
+                return _f95d_wrap(self, cr, state.depth_for(filename), st, at)
             except Exception:
-                pass
-            return cr
+                return cr
 
         _f95d_im.Image.render = _f95d_image_render
 
@@ -160,10 +206,14 @@ init 999 python:
 
             def _f95d_movie_render(self, w, h, st, at):
                 cr = _f95d_orig_movie_render(self, w, h, st, at)
-                if _f95d_state.pass_depth:
-                    cw, ch = cr.get_size()
-                    return _f95d_textured([cr], cw, ch, "f95.black", {})
-                return cr
+                state = _f95d_state
+                if state.mode() == "off" and not state.pass_depth:
+                    return cr
+                try:
+                    play = getattr(self, "_play", None)
+                    return _f95d_wrap(self, cr, state.depth_for(play) if play else None, st, at)
+                except Exception:
+                    return cr
 
             _f95d_video.Movie.render = _f95d_movie_render
         except Exception:
@@ -236,8 +286,12 @@ def _log(msg: str):
 def prefs() -> dict:
     p = installdate.prefs()
     p.setdefault("depth_model_path", "")
-    p.setdefault("depth_live_amp", 1.2)       # % of the picture width
+    p.setdefault("depth_live_amp", 0.6)       # % of the picture width
     p.setdefault("depth_3d_amp", 3.0)
+    p.setdefault("depth_live_motion", "mouse")
+    if p.get("depth_prefs_v", 1) < 2:         # living pictures were too strong (nausea): gentler default once
+        p["depth_live_amp"] = min(float(p.get("depth_live_amp", 0.6)), 0.6)
+        p["depth_prefs_v"] = 2
     return p
 
 
@@ -325,28 +379,100 @@ def depth_name(key: str) -> str:
     return f"{DEPTH_DIR}/{key}.webp"
 
 
-def make_depth(media, dst: pathlib.Path, estimate) -> str:
-    """'' / 'skip' / an error. Writes a grey + alpha WebP (alpha of the picture: sprites stay sprites)."""
-    import io
+def centre_on_subject(depth):
+    """Depth remapped so the main subject (centre of the picture, weighted) is at 0.5: it stays still in living
+    pictures and on the screen plane in 3D, the background goes behind it, closer things come forward."""
+    import numpy
+    h, w = depth.shape
+    yy, xx = numpy.mgrid[0:h, 0:w]
+    weight = numpy.exp(-(((xx / max(1, w - 1) - 0.5) / 0.28) ** 2 + ((yy / max(1, h - 1) - 0.45) / 0.33) ** 2))
+    order = numpy.argsort(depth, axis=None)
+    cumulative = numpy.cumsum(weight.ravel()[order])
+    subject = float(depth.ravel()[order][numpy.searchsorted(cumulative, cumulative[-1] / 2)])
+    subject = min(0.85, max(0.15, subject))
+    return numpy.where(depth < subject, depth / subject * 0.5, 0.5 + (depth - subject) / (1.0 - subject) * 0.5)
+
+
+def depth_picture(rgba, estimate):
+    """RGBA PIL picture -> RGBA depth map (grey = depth, alpha of the picture: sprites stay sprites)."""
     import numpy
     from PIL import Image, ImageFilter
+    alpha = rgba.getchannel("A")
+    rgb = Image.new("RGB", rgba.size, (0, 0, 0))
+    rgb.paste(rgba, mask=alpha)
+    depth = centre_on_subject(estimate(rgb))
+    width = min(rgba.width, MAX_DEPTH_WIDTH)
+    height = max(1, round(rgba.height * width / rgba.width))
+    grey = Image.fromarray((numpy.clip(depth, 0, 1) * 255).astype(numpy.uint8), "L").resize((width, height), Image.BICUBIC)
+    # near things grown by a few pixels before smoothing: the stretch at their outline falls on the background
+    # (blurry anyway) instead of eating into the character's edge: no halo around them when the view moves
+    grow = max(3, (width // 160) | 1)
+    grey = grey.filter(ImageFilter.MaxFilter(grow)).filter(ImageFilter.GaussianBlur(max(1.5, width / 320)))
+    return Image.merge("RGBA", (grey, grey, grey, alpha.resize((width, height), Image.BILINEAR)))
+
+
+def video_frame(media, t: dict):
+    """A frame from the middle of an animation (PIL RGBA), or None. PyAV (in F95Checker) or ffmpeg."""
+    import io
+    import subprocess
+    import tempfile
+    from PIL import Image
+    work = pathlib.Path(tempfile.mkdtemp(prefix="f95dframe_"))
     try:
-        with Image.open(io.BytesIO(media.read())) as im:
-            if getattr(im, "is_animated", False):
+        src = work / ("v" + pathlib.PurePosixPath(media.key).suffix)
+        if media.entry:
+            src.write_bytes(media.read())
+        else:
+            src = media.path
+        with contextlib.suppress(ImportError):
+            import av
+            with av.open(str(src)) as container:
+                stream = container.streams.video[0]
+                frames = []
+                for i, frame in enumerate(container.decode(stream)):
+                    frames.append(frame)
+                    if i >= 400:
+                        break
+                if frames:
+                    return frames[len(frames) // 2].to_image().convert("RGBA")
+            return None
+        ffmpeg = (t or {}).get("ffmpeg")
+        if not ffmpeg:
+            return None
+        info = remaster.video_info(src, (t or {}).get("ffprobe")) if (t or {}).get("ffprobe") else {}
+        middle = max(0.0, float(info.get("duration") or 0) / 2)
+        out = work / "frame.png"
+        subprocess.run([str(ffmpeg), "-v", "error", "-y", "-ss", f"{middle:.3f}", "-i", str(src), "-frames:v", "1", str(out)],
+                       capture_output=True, timeout=120, **remaster._no_window())
+        if not out.is_file():
+            return None
+        with Image.open(out) as im:
+            return im.convert("RGBA")
+    except Exception:
+        return None
+    finally:
+        import shutil as _shutil
+        _shutil.rmtree(work, ignore_errors=True)
+
+
+def make_depth(media, dst: pathlib.Path, estimate, tools: dict | None = None) -> str:
+    """'' / 'skip' / an error. Pictures, and animations (a frame from their middle: the camera rarely moves)."""
+    import io
+    from PIL import Image
+    try:
+        if pathlib.PurePosixPath(media.key).suffix.lower() in tuple(toygen.VIDEO_EXTS):
+            rgba = video_frame(media, tools)
+            if rgba is None:
                 return "skip"
-            im.load()
-            if min(im.size) < MIN_SIDE:
-                return "skip"
-            rgba = im.convert("RGBA")
-        alpha = rgba.getchannel("A")
-        rgb = Image.new("RGB", rgba.size, (0, 0, 0))
-        rgb.paste(rgba, mask=alpha)
-        depth = estimate(rgb)
-        width = min(rgba.width, MAX_DEPTH_WIDTH)
-        height = max(1, round(rgba.height * width / rgba.width))
-        grey = Image.fromarray((depth * 255).astype(numpy.uint8), "L").resize((width, height), Image.BICUBIC)
-        grey = grey.filter(ImageFilter.GaussianBlur(max(1.5, width / 400)))       # soft edges: no halo when moving
-        out = Image.merge("RGBA", (grey, grey, grey, alpha.resize((width, height), Image.BILINEAR)))
+        else:
+            with Image.open(io.BytesIO(media.read())) as im:
+                if getattr(im, "is_animated", False):
+                    return "skip"
+                im.load()
+                rgba = im.convert("RGBA")
+        if min(rgba.size) < MIN_SIDE:
+            return "skip"
+        out = depth_picture(rgba, estimate)
         dst.parent.mkdir(parents=True, exist_ok=True)
         tmp = dst.with_name(dst.name + ".tmp")
         out.save(tmp, "WEBP", quality=85, method=4)
@@ -378,14 +504,28 @@ def eligible(root: pathlib.Path) -> str:
 
 
 def wanted_images(game_dir: pathlib.Path) -> list:
-    return [m for m in remaster.list_images(game_dir) if not m.key.lower().startswith(("gui/", DEPTH_DIR.lower() + "/"))]
+    """Pictures and animations of the game (the interface left out)."""
+    media = remaster.list_images(game_dir) + remaster.list_videos(game_dir)
+    return [m for m in media if not m.key.lower().startswith(("gui/", DEPTH_DIR.lower() + "/"))]
+
+
+def maps_outdated(game_dir: pathlib.Path) -> bool:
+    """Depth maps made by an older F95Checker (before subject centring / clean edges): made again."""
+    folder = game_dir / DEPTH_DIR
+    if not folder.is_dir():
+        return False
+    with contextlib.suppress(OSError):
+        return (folder / VERSION_FILE).read_text(encoding="utf-8").strip() != DEPTH_VERSION
+    return True
 
 
 def script_content() -> str:
     p = prefs()
-    live = max(0.1, min(5.0, float(p["depth_live_amp"]))) / 100
+    live = max(0.1, min(3.0, float(p["depth_live_amp"]))) / 100
     sbs = max(0.5, min(8.0, float(p["depth_3d_amp"]))) / 100
-    return SCRIPT.replace("F95D_LIVE_AMP_VALUE", f"{live:.4f}").replace("F95D_3D_AMP_VALUE", f"{sbs:.4f}")
+    motion = p["depth_live_motion"] if p["depth_live_motion"] in LIVE_MOTIONS else "mouse"
+    return (SCRIPT.replace("F95D_LIVE_AMP_VALUE", f"{live:.4f}").replace("F95D_3D_AMP_VALUE", f"{sbs:.4f}")
+            .replace("F95D_MOTION_VALUE", motion))
 
 
 def write_script(root: pathlib.Path) -> bool:
@@ -407,7 +547,7 @@ def count_done(root: pathlib.Path) -> int:
     folder = root / "game" / DEPTH_DIR
     if not folder.is_dir():
         return 0
-    return sum(1 for _ in folder.rglob("*.webp"))
+    return sum(1 for p in folder.rglob("*.webp"))
 
 
 def remove(game: Game) -> str:
@@ -478,12 +618,18 @@ def _process(games: list, estimator_factory=None):
             continue
         game_dir = root / "game"
         job.game_id, job.game_name = game.id, game.name
-        todo = [m for m in wanted_images(game_dir) if not (game_dir / depth_name(m.key)).is_file()]
+        redo = maps_outdated(game_dir)
+        todo = [m for m in wanted_images(game_dir) if redo or not (game_dir / depth_name(m.key)).is_file()]
         job.done, job.total = 0, len(todo)
+        tools = remaster.tools() if any(pathlib.PurePosixPath(m.key).suffix.lower() in tuple(toygen.VIDEO_EXTS) for m in todo) else {}
+        (game_dir / DEPTH_DIR).mkdir(parents=True, exist_ok=True)
+        if redo:
+            with contextlib.suppress(OSError):
+                (game_dir / DEPTH_DIR / VERSION_FILE).unlink()
         for media in todo:
             if job.cancel or remaster._drive_full(root):
                 break
-            error = make_depth(media, game_dir / depth_name(media.key), estimate)
+            error = make_depth(media, game_dir / depth_name(media.key), estimate, tools)
             if error == "skip":
                 job.skipped += 1
             elif error:
@@ -492,6 +638,9 @@ def _process(games: list, estimator_factory=None):
             else:
                 job.made += 1
             job.done += 1
+        if job.done == job.total and not job.cancel:
+            with contextlib.suppress(OSError):
+                (game_dir / DEPTH_DIR / VERSION_FILE).write_text(DEPTH_VERSION, encoding="utf-8")
         if count_done(root):
             with contextlib.suppress(OSError):
                 write_script(root)
@@ -551,10 +700,10 @@ def open_popup(game: Game):
     state = {"msg": ""}
 
     def content():
-        imgui.text_disabled("Each picture of the game gets a depth map, made once by your graphics card. In the game, Shift+P:\n"
-                            "off -> living pictures (near things move slightly, slow camera breathing)\n"
+        imgui.text_disabled("Each picture and animation of the game gets a depth map, made once by your graphics card.\n"
+                            "In the game, Shift+P: off -> living pictures (the view follows the mouse slowly, the subject stays still)\n"
                             "    -> 3D side by side (Quest 3 + Virtual Desktop: 3D mode \"Half SBS\") -> off.\n"
-                            "Pictures only (not the videos). The game's own files and your saves are not touched.")
+                            "The game's own files and your saves are not touched.")
         imgui.separator()
         root = game_root(game)
         if root is None:
@@ -566,6 +715,9 @@ def open_popup(game: Game):
             return
         done = count_done(root)
         imgui.text(f"Depth maps: {done}" + ("  - script installed (Shift+P in the game)" if installed(game) else ""))
+        if done and maps_outdated(root / "game"):
+            imgui.text_colored("Made by an older F95Checker: Start makes them again (cleaner edges, subject centred, animations).",
+                               0.95, 0.7, 0.2)
         if job.running:
             if job.game_id == game.id or job.games_total == 1:
                 _draw_progress(imgui)

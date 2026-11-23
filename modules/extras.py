@@ -599,7 +599,15 @@ def diagnose(game: Game) -> Diagnosis | None:
             d.explain += f"\nThe older file is {older}: set it aside (moved to _disabled_mods, move it back to undo)."
             d.actions.append((f"Set aside {older[5:]}", lambda: _disable(game, older[5:])))
         return d
-    # 4. missing files
+    # 4. missing files (the game's own scripts gone: Ren'Py only finds F95Checker's, no 'start' label)
+    if "could not find label 'start'" in text and exe is not None and not _has_game_scripts(exe.parent / "game"):
+        d.kind = "missing"
+        d.explain = ("The game's scripts are gone: the game folder holds no .rpyc / .rpy of the game itself (only the small\n"
+                     "files added by F95Checker), so Ren'Py finds no story to start. Look in the Windows Recycle Bin first\n"
+                     "(files of this folder deleted recently: Restore). Otherwise download this version again and install it\n"
+                     "with Import Update: the missing files come back, your saves and the rest stay.")
+        d.actions.append(("Open the game thread", lambda: _open(game.url)))
+        return d
     missing = [next(g for g in m.groups() if g) for m in _MISSING_RE.finditer(top)]
     if missing:
         d.kind = "missing"
@@ -633,6 +641,21 @@ def diagnose(game: Game) -> Diagnosis | None:
     d.explain = (f"Error in {d.culprit}, line {d.line}." if d.culprit else "Error inside the Ren'Py engine.") + \
         "\nNo known fix: the full text is in the file below (the game's thread often has the answer)."
     return d
+
+
+def _has_game_scripts(game_dir: pathlib.Path) -> bool:
+    """Scripts of the game itself, loose or in an archive (F95Checker's zz_ files and dlss5_settings left out)."""
+    for current, dirs, files in os.walk(game_dir):
+        dirs[:] = [d for d in dirs if d.lower() not in ("cache", "saves", "tl", "_f95depth", "__pycache__")]
+        if any(f.lower().endswith((".rpyc", ".rpy")) and not f.lower().startswith(("zz_f95", "dlss5_settings")) for f in files):
+            return True
+    for archive in game_dir.glob("*.rpa"):
+        with contextlib.suppress(Exception):
+            from modules import toygen
+            index = toygen.rpa_index(archive)
+            if not index or any(k.lower().endswith((".rpyc", ".rpy")) for k in index):
+                return True                 # unreadable archive (protected game): assume the scripts are there
+    return False
 
 
 def _engine_conflicts(exe: pathlib.Path) -> bool:

@@ -831,6 +831,13 @@ async def scan_library(*games: Game, manual=True, reserved=False):
                 await loop.run_in_executor(None, cheatsheet.refresh_menu_if_needed, game)
             except Exception as exc:
                 _log(f"'{game.name}': in-game cheat menu not refreshed: {exc}")
+            try:
+                from modules import depth
+                root = depth.game_root(game)
+                if root is not None and (root / "game" / depth.SCRIPT_FILE).is_file():
+                    await loop.run_in_executor(None, depth.write_script, root)   # new F95Checker / settings: script up to date
+            except Exception as exc:
+                _log(f"'{game.name}': 3D & living pictures script not refreshed: {exc}")
         except Exception:
             _log(f"'{game.name}': error {error.traceback()}")
             report.errors.append(f"{game.name}: {error.text()}")
