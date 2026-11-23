@@ -22,6 +22,7 @@ Display profile (per game)
       (its DLL is renamed to .dll.off when off).
 """
 import asyncio
+import concurrent.futures
 import contextlib
 import dataclasses
 import os
@@ -32,6 +33,7 @@ import re
 import shutil
 import stat
 import subprocess
+import threading
 import time
 import zlib
 
@@ -1147,6 +1149,25 @@ def _file_age(st) -> float:
     return max(getattr(st, "st_birthtime", 0) or 0, st.st_mtime)
 
 
+def _hash_drive(files: list, job: EngineJob, lock) -> dict:
+    """One drive: content hash of every file, in path order (game folder after game folder). Same file id = hashed once."""
+    digests, by_inode = {}, {}
+    for path, st in sorted(files, key=lambda ps: str(ps[0]).lower()):
+        if job.cancel:
+            break
+        inode = (st.st_dev, st.st_ino)
+        if inode not in by_inode:
+            try:
+                by_inode[inode] = _file_hash(path)
+            except OSError:
+                by_inode[inode] = None
+        if by_inode[inode]:
+            digests[path] = by_inode[inode]
+        with lock:
+            job.done += 1
+    return digests
+
+
 def analyse_engine(job: EngineJob):
     """Blocking. Fills job.groups / job.gain with identical engine files (same drive, same place, same bytes)."""
     folders = [(g, f) for g, f in renpy_folders() if g.launch_state is LaunchState.Idle]
@@ -1190,28 +1211,36 @@ def analyse_engine(job: EngineJob):
             job.done += 1
         if len({(st.st_dev, st.st_ino) for _, st in stats}) > 1:
             candidates.append(stats)
-    job.step, job.total = "Comparing contents", sum(len(c) for c in candidates)
+    # 3. contents: one reading thread per drive (drives read at the same time), and on each drive the files in
+    #    folder order (game after game) rather than one engine file across all games: far fewer head moves.
+    per_drive: dict = {}
+    for stats in candidates:
+        for path, st in stats:
+            per_drive.setdefault(os.path.splitdrive(str(path))[0].upper() or st.st_dev, []).append((path, st))
+    job.step = f"Comparing contents ({len(per_drive)} drive{'s' if len(per_drive) > 1 else ''} at once)"
+    job.done, job.total = 0, sum(len(v) for v in per_drive.values())
+    lock = threading.Lock()
+    digests: dict[pathlib.Path, str] = {}
+    if per_drive:
+        with concurrent.futures.ThreadPoolExecutor(len(per_drive), thread_name_prefix="engine-hash") as pool:
+            for result in pool.map(lambda files: _hash_drive(files, job, lock), per_drive.values()):
+                digests.update(result)
     groups, gain = [], {}
-    for paths in candidates:
+    for stats in candidates:
         if job.cancel:
             break
         by_hash: dict[str, list[tuple[pathlib.Path, os.stat_result]]] = {}
-        hashed_inodes: dict[tuple, str] = {}
-        for path, st in paths:
-            inode = (st.st_dev, st.st_ino)
-            try:
-                digest = hashed_inodes.get(inode) or _file_hash(path)
-            except OSError:
-                continue
-            hashed_inodes[inode] = digest
-            by_hash.setdefault(digest, []).append((path, st))
-            job.done += 1
+        for path, st in stats:
+            if path in digests:
+                by_hash.setdefault(digests[path], []).append((path, st))
         for same in by_hash.values():
             inodes = {(st.st_dev, st.st_ino) for _, st in same}
             if len(inodes) > 1:
                 groups.append([p for p, _ in same])
                 drive = os.path.splitdrive(str(same[0][0]))[0].upper() or f"volume {same[0][1].st_dev}"
                 gain[drive] = gain.get(drive, 0) + same[0][1].st_size * (len(inodes) - 1)
+    if job.cancel:
+        groups, gain = [], {}
     job.groups, job.gain = groups, gain
     job.message = (f"{installdate.size_display(sum(gain.values()))} can be saved ({len(groups)} files shared by several games)"
                    if groups else "Nothing to share: the engines are all different or already shared.")
