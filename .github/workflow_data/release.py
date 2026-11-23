@@ -27,9 +27,11 @@ if __name__ == "__main__":
                 asset_url = asset["browser_download_url"]
         body += f">### [{asset_type} {asset_icon}]({asset_url}) ([VirusTotal](https://www.virustotal.com/gui/file/))\n\n"
     body += (
-        "## ❤️ Support\n" +
-        "F95Checker is **Free and Open Source Software**, provided to you **free of cost**. However it is actively **developed by " +
-        "one single person only, WillyJL**. Please consider [**donating**](https://linktr.ee/WillyJL) or **sharing this software**!\n\n" +
+        "## ❤️ Credits\n" +
+        "F95Checker Enhanced is a fork of [**F95Checker**](https://github.com/WillyJL/F95Checker), **Free and Open Source Software** " +
+        "(GPLv3) **developed by WillyJL**. Please consider [**donating to WillyJL**](https://linktr.ee/WillyJL). Bugs in the " +
+        "Enhanced features go to this fork's issues, not to WillyJL. The Windows zip ships Real-ESRGAN, RIFE, ffmpeg and " +
+        "Depth Anything V2 Small in `tools/`: see `THIRD_PARTY_NOTICES.md`.\n\n" +
         "## 🚀 Changelog\n" +
         changelog
     )
