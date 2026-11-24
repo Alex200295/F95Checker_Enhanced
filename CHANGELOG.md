@@ -1,3 +1,17 @@
+## 11.2.1.2
+
+### Added:
+- PIN lock: **Lock at startup** option (Library tools > Settings, on by default). Off: the PIN is only asked after inactivity, when minimised (option) or with the Lock button
+- **Skip this game** while every game is worked on: HD & 60 fps (Start all) and 3D pictures & living pictures (every game). The current game stops at once (what is made is kept), the next one starts; the next Start all comes back to it. The skipped games are listed at the end
+
+### Fixed:
+- Release page text written even when one of the builds fails (e.g. no macOS arm64 runner available)
+- HD & 60 fps: Cancel stopped only after the current file (several minutes for a long video): Real-ESRGAN / RIFE / ffmpeg are now stopped at once
+- 3D pictures: an interrupted run (Cancel, closing F95Checker, a crash) made every depth map again at the next start instead of only the missing ones. Depth maps of the current version you already made are kept; only the older ones are made again
+- Settings (`local_scan_prefs.json`, PIN included), the local scan cache and the play log are saved through a temporary file: a crash, a power cut or a full drive can no longer leave a half-written file, which reset every setting at the next start. A file that cannot be read is kept as `.broken` instead of being replaced by empty settings
+- Uninstall a mod after an Import Update of the game: the files the update replaced were deleted and the old version's files put back over them. The files changed since the mod was installed are now left as they are (the `.rpyc` Ren'Py recompiles from the mod's scripts are still removed)
+- Install mod: choosing the game folder itself (or a folder containing it, or its own `game` folder) moved the game's files into the mod backup. Refused now, nothing is changed
+
 ## 11.2.1.1
 
 **F95Checker Enhanced 1**, based on F95Checker 11.2.1 by WillyJL. Everything below is new compared to the official 11.2.1.
