@@ -158,6 +158,7 @@ Clic droit sur un jeu Ren'Py → **HD & 60 fps...** La fenêtre analyse le jeu e
 
 Toute la bibliothèque : **Library tools → HD & 60 fps: Open → Start all**. Un jeu après l'autre ; **Cancel** ou fermer
 F95Checker l'arrête, Start all reprend là où il s'était arrêté. Un disque avec moins de 15 Go libres est laissé de côté.
+**Skip this game** passe le jeu en cours (ce qui est fait est gardé) et continue avec le suivant ; le prochain Start all y revient.
 
 ![HD & 60 fps pour tous les jeux](images/hd60-every-game.png)
 
@@ -180,6 +181,7 @@ En jeu, **Maj+P** fait défiler :
 - **off**.
 
 Toute la bibliothèque : **Library tools → 3D pictures: Open → Start all** (long : laisse tourner la nuit).
+**Skip this game** passe le jeu en cours (cartes déjà faites gardées) ; le prochain Start all le reprend là où il en était.
 
 ![3D pour tous les jeux](images/3d-every-game.png)
 

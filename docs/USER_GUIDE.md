@@ -145,6 +145,7 @@ Right click on a Ren'Py game → **HD & 60 fps...** The window analyses the game
 
 Whole library: **Library tools → HD & 60 fps: Open → Start all**. One game after the other; **Cancel** or closing
 F95Checker stops it, Start all resumes where it stopped. A drive with less than 15 GB free is left alone.
+**Skip this game** leaves the current game (what is made is kept) and goes on with the next one; the next Start all comes back to it.
 
 ![HD & 60 fps for every game](images/hd60-every-game.png)
 
@@ -165,6 +166,7 @@ In the game, **Shift+P** cycles:
 - **off**.
 
 Whole library: **Library tools → 3D pictures: Open → Start all** (long: let it run at night).
+**Skip this game** leaves the current game (the depth maps made are kept); the next Start all resumes it where it was.
 
 ![3D for every game](images/3d-every-game.png)
 

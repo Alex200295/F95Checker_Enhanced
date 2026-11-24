@@ -2,6 +2,20 @@
 
 **[English](../CHANGELOG.md)** · [README](../README.fr.md) · [Guide d'utilisation](GUIDE_UTILISATEUR.md)
 
+## 11.2.1.2
+
+### Ajouté :
+- Verrou par code : option **Lock at startup** (Library tools > Settings, activée par défaut). Désactivée : le code n'est demandé qu'après inactivité, à la réduction (option) ou avec le bouton Lock
+- **Skip this game** (passer le jeu) pendant les traitements de tous les jeux : HD & 60 fps (Start all) et images 3D & living pictures (tous les jeux). Le jeu en cours s'arrête tout de suite (ce qui est fait est gardé), le suivant démarre ; le prochain Start all reprend ce jeu. Les jeux passés sont listés à la fin
+
+### Corrigé :
+- Le texte de la page de release est écrit même si un des builds échoue (ex. pas de Mac arm64 disponible chez GitHub)
+- HD & 60 fps : Cancel n'agissait qu'après le fichier en cours (plusieurs minutes pour une longue vidéo) : Real-ESRGAN / RIFE / ffmpeg sont maintenant arrêtés immédiatement
+- Images 3D : une génération interrompue (Cancel, fermeture de F95Checker, plantage) refaisait toutes les cartes de profondeur au lancement suivant au lieu des seules manquantes. Les cartes de la version actuelle déjà faites sont gardées ; seules les anciennes sont refaites
+- Les réglages (`local_scan_prefs.json`, code PIN compris), le cache du scan local et le journal de jeu sont enregistrés via un fichier temporaire : un plantage, une coupure de courant ou un disque plein ne peuvent plus laisser un fichier à moitié écrit, qui remettait tous les réglages à zéro au lancement suivant. Un fichier illisible est gardé en `.broken` au lieu d'être remplacé par des réglages vides
+- Désinstaller un mod après un Import Update du jeu : les fichiers remplacés par la mise à jour étaient supprimés et les fichiers de l'ancienne version remis par-dessus. Les fichiers modifiés depuis l'installation du mod sont maintenant laissés tels quels (les `.rpyc` que Ren'Py recompile depuis les scripts du mod sont toujours supprimés)
+- Install mod : choisir le dossier du jeu lui-même (ou un dossier qui le contient, ou son propre dossier `game`) déplaçait les fichiers du jeu dans la sauvegarde du mod. C'est maintenant refusé, rien n'est modifié
+
 ## 11.2.1.1
 
 **F95Checker Enhanced 1**, basé sur F95Checker 11.2.1 de WillyJL. Tout ce qui suit est nouveau par rapport à la 11.2.1 officielle.
