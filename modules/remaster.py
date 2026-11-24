@@ -492,17 +492,32 @@ class Job:
 job = Job()
 
 
-def _run(cmd: list, timeout: int) -> str:
-    """'' or the error (last line of the tool's output). Runs in the tool's folder (Real-ESRGAN / RIFE find their models there)."""
+CANCELLED = "cancelled"
+
+
+def _run(cmd: list, timeout: int, stop=None) -> str:
+    """'' or the error (last line of the tool's output). Runs in the tool's folder (Real-ESRGAN / RIFE find their models there).
+    stop() true (Cancel / Skip, default: job.cancel): the tool is stopped at once and CANCELLED is returned."""
+    stop = stop or (lambda: job.cancel)
     try:
-        proc = subprocess.run([str(c) for c in cmd], capture_output=True, timeout=timeout,
-                              cwd=str(pathlib.Path(str(cmd[0])).parent), **_no_window())
-    except subprocess.TimeoutExpired:
-        return f"{pathlib.Path(str(cmd[0])).name} took more than {timeout // 60} minutes"
+        proc = subprocess.Popen([str(c) for c in cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                cwd=str(pathlib.Path(str(cmd[0])).parent), **_no_window())
     except OSError as exc:
         return str(exc)
+    deadline = time.time() + timeout
+    while True:
+        try:
+            out, err = proc.communicate(timeout=0.5)
+            break
+        except subprocess.TimeoutExpired:
+            cancelled = stop()
+            if cancelled or time.time() > deadline:
+                proc.kill()
+                with contextlib.suppress(Exception):
+                    proc.communicate(timeout=10)
+                return CANCELLED if cancelled else f"{pathlib.Path(str(cmd[0])).name} took more than {timeout // 60} minutes"
     if proc.returncode != 0:
-        text = (proc.stderr or proc.stdout or b"").decode(errors="replace").strip().splitlines()
+        text = (err or out or b"").decode(errors="replace").strip().splitlines()
         return (text[-1] if text else "") or f"exit code {proc.returncode}"
     return ""
 
@@ -603,14 +618,16 @@ def make_60fps(media: Media, dst: pathlib.Path, t: dict) -> tuple[str, dict]:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _drive_full(root: pathlib.Path) -> bool:
+def _drive_full(root: pathlib.Path, target=None) -> bool:
+    """target: the job told (default: HD & 60 fps; 3D pictures pass theirs)."""
+    target = target if target is not None else job
     try:
         if shutil.disk_usage(root).free >= MIN_FREE_BYTES:
             return False
     except OSError:
         return False
-    job.message = f"stopped: less than {MIN_FREE_BYTES // 1024 ** 3} GB free on {root.anchor or root}"
-    job.drive_full = True
+    target.message = f"stopped: less than {MIN_FREE_BYTES // 1024 ** 3} GB free on {root.anchor or root}"
+    target.drive_full = True
     return True
 
 
@@ -646,6 +663,8 @@ def _process(game: Game, hd: bool, fps: bool):
                 return
             dst = game_dir / hd_name(media.key)
             error = make_hd(media, dst, t["esrgan"], model)
+            if job.cancel and error:
+                return                      # Cancel / Skip: this picture is made again next time
             if error == "skip":
                 job.skipped += 1
             elif error:
@@ -685,10 +704,14 @@ def _process(game: Game, hd: bool, fps: bool):
                 if error:
                     with contextlib.suppress(OSError):
                         tmp_dst.unlink()
+                if job.cancel and error:
+                    return                  # Cancel / Skip: this video is tried again next time
             else:
                 # inside an archive: the new video is written loose at the same path, Ren'Py takes it first
                 dst = game_dir / media.key
                 error, info = make_60fps(media, dst, t)
+                if job.cancel and error:
+                    return                  # Cancel / Skip: this video is tried again next time
                 if not error:
                     record(dst.relative_to(root).as_posix())
             if error.startswith("skip"):
@@ -746,6 +769,7 @@ class Batch:
     games_skipped: list = dataclasses.field(default_factory=list)  # "name: reason"
     started: float = 0.0
     message: str = ""
+    skip: bool = False          # "Skip this game": the current game stops, the next one starts
 
 
 batch = Batch()
@@ -777,7 +801,8 @@ def _batch_plan(games: list, hd: bool, fps: bool) -> list:
 
 
 async def start_all(games: list, hd: bool, fps: bool):
-    """One game after the other, one file at a time. Cancel stops after the current file; Start again resumes."""
+    """One game after the other, one file at a time. Cancel stops at once (the current file is made again next time);
+    Skip goes on with the next game; Start again resumes."""
     if job.running or batch.running:
         return
     loop = asyncio.get_running_loop()
@@ -798,6 +823,7 @@ async def start_all(games: list, hd: bool, fps: bool):
                 continue
             job.__init__()
             job.running, job.game_id, job.game_name, job.started = True, game.id, game.name, time.time()
+            job.cancel = batch.skip         # Skip pressed while the previous game was ending: this one is skipped
             try:
                 await loop.run_in_executor(None, _process, game, hd and hd_here, fps)
             except Exception as exc:
@@ -809,6 +835,9 @@ async def start_all(games: list, hd: bool, fps: bool):
             batch.skipped += job.skipped
             batch.failed += job.failed
             batch.files_done += count
+            if batch.skip and not batch.cancel:
+                batch.skip = False
+                batch.games_skipped.append(f"{game.name}: skipped (what was made is kept, Start all goes on with it next time)")
             if job.drive_full:
                 batch.games_skipped.append(f"{game.name}: {job.message}")
             if job.failed and job.last_error:
@@ -831,6 +860,13 @@ async def start_all(games: list, hd: bool, fps: bool):
 def cancel_all():
     batch.cancel = True
     job.cancel = True
+
+
+def skip_current():
+    """Every game: stops the current game at once (what is made is kept), goes on with the next one."""
+    if batch.running:
+        batch.skip = True
+        job.cancel = True
 
 
 def open_all_popup():
@@ -858,8 +894,18 @@ def open_all_popup():
                 imgui.text(f"{batch.made + job.made} made, {batch.skipped + job.skipped} kept, {batch.failed + job.failed} failed")
             else:
                 imgui.text(batch.phase)
+            if batch.games and job.running:
+                if imgui.button("Skip this game###rma_skip"):
+                    skip_current()
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip("Stops this game now (what is made is kept) and goes on with the next one.\n"
+                                      "Start all comes back to it next time.")
+                imgui.same_line()
             if imgui.button("Cancel###rma_cancel"):
                 cancel_all()
+            if batch.games_skipped:
+                for line in batch.games_skipped[-5:]:
+                    imgui.text_disabled("   " + line)
             return
         _, state["hd"] = imgui.checkbox("HD pictures (Ren'Py 8.4+ games made for less than 1080p; 1080p games: one by one)###rma_hd", state["hd"])
         if state["hd"] and not t["esrgan"]:
@@ -957,7 +1003,11 @@ def open_popup(game: Game):
             if job.done and job.total:
                 eta = f", about {int(elapsed / job.done * (job.total - job.done) / 60) + 1} min left"
             imgui.text(f"{job.phase}: {job.done}/{job.total}{eta}  ({job.made} made, {job.skipped} kept, {job.failed} failed)")
-            if imgui.button("Cancel###rm_cancel"):
+            if batch.running:
+                # this game is the current one of "every game": skipped, the others go on
+                if imgui.button("Skip this game###rm_skip"):
+                    skip_current()
+            elif imgui.button("Cancel###rm_cancel"):
                 job.cancel = True
         elif job.running or batch.running:
             imgui.text(f"Busy with {job.game_name or 'every game'}: {job.phase} {job.done}/{job.total}")

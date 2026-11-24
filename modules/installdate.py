@@ -1135,12 +1135,35 @@ async def detect_install_dates(*games: Game):
 _local_info: dict[int, dict] | None = None
 
 
+def _load_json(name: str):
+    """<F95Checker data>/name, or None. A file that cannot be read is copied to name.broken first:
+    the next save would otherwise replace it with empty settings and nothing could be recovered."""
+    path = globals.data_path / name
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        _log(f"Cannot read {name} ({exc}): a copy is kept as {name}.broken")
+        with contextlib.suppress(OSError):
+            shutil.copy2(path, path.with_name(name + ".broken"))
+        return None
+
+
+def _save_json(name: str, data):
+    """Written to name.tmp then swapped in: a crash, a power cut or a full drive never leaves a half-written file."""
+    path = globals.data_path / name
+    tmp = path.with_name(name + ".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def local_info() -> dict[int, dict]:
     global _local_info
     if _local_info is None:
         try:
-            raw = json.loads((globals.data_path / "local_scan.json").read_text(encoding="utf-8"))
-            _local_info = {int(key): value for key, value in raw.items() if isinstance(value, dict)}
+            raw = _load_json("local_scan.json")
+            _local_info = {int(key): value for key, value in raw.items() if isinstance(value, dict)} if isinstance(raw, dict) else {}
         except Exception:
             _local_info = {}
     return _local_info
@@ -1148,7 +1171,7 @@ def local_info() -> dict[int, dict]:
 
 def save_local_info():
     try:
-        (globals.data_path / "local_scan.json").write_text(json.dumps(local_info()), encoding="utf-8")
+        _save_json("local_scan.json", local_info())
     except OSError as exc:
         _log(f"Cannot save local_scan.json: {exc}")
 
@@ -1272,9 +1295,8 @@ def prefs() -> dict:
     """Small preferences of this module (local_scan_prefs.json): {"jdownloader": False}."""
     global _prefs
     if _prefs is None:
-        try:
-            _prefs = json.loads((globals.data_path / "local_scan_prefs.json").read_text(encoding="utf-8"))
-        except Exception:
+        _prefs = _load_json("local_scan_prefs.json")
+        if not isinstance(_prefs, dict):
             _prefs = {}
         _prefs.setdefault("jdownloader", False)
         _prefs.setdefault("cheats_default", True)
@@ -1284,7 +1306,7 @@ def prefs() -> dict:
 
 def save_prefs():
     try:
-        (globals.data_path / "local_scan_prefs.json").write_text(json.dumps(prefs()), encoding="utf-8")
+        _save_json("local_scan_prefs.json", prefs())
     except OSError as exc:
         _log(f"Cannot save local_scan_prefs.json: {exc}")
 

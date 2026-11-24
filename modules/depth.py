@@ -42,6 +42,10 @@ MODEL_NAMES = ("depth_anything_v2_base.onnx", "depth_anything_v2_vitb.onnx",
                "depth_anything_v2_small.onnx", "depth_anything_v2_vits.onnx", "depth_anything_v2_small_fp16.onnx")
 DEPTH_VERSION = "2"             # depth maps made before (version file missing / older) are made again
 VERSION_FILE = "version.txt"
+# A game being made (or made again): maps older than the time written in this file are (re)made, the newer ones kept,
+# so Cancel / Skip / closing F95Checker resumes instead of starting the game over. Removed when the game is finished.
+REDO_FILE = "redo_since.txt"
+V2_SINCE = 1795455537           # maps made before version 2 existed (older F95Checker): made again
 LIVE_MOTIONS = ("mouse", "sway")
 MIN_VERSION = (8, 1)
 MIN_SIDE = 200                  # smaller pictures (buttons, icons) are left out
@@ -509,14 +513,27 @@ def wanted_images(game_dir: pathlib.Path) -> list:
     return [m for m in media if not m.key.lower().startswith(("gui/", DEPTH_DIR.lower() + "/"))]
 
 
-def maps_outdated(game_dir: pathlib.Path) -> bool:
-    """Depth maps made by an older F95Checker (before subject centring / clean edges): made again."""
+def redo_since(game_dir: pathlib.Path) -> float | None:
+    """None: the maps there are current (or there are none yet). Else the maps older than this time are made again."""
     folder = game_dir / DEPTH_DIR
     if not folder.is_dir():
+        return None
+    with contextlib.suppress(OSError):
+        if (folder / VERSION_FILE).read_text(encoding="utf-8").strip() == DEPTH_VERSION:
+            return None
+    with contextlib.suppress(OSError, ValueError):
+        return float((folder / REDO_FILE).read_text(encoding="utf-8").strip())
+    return float(V2_SINCE)          # no file yet: only the maps of an older F95Checker are made again
+
+
+def maps_outdated(game_dir: pathlib.Path) -> bool:
+    """Depth maps made by an older F95Checker (before subject centring / clean edges) are still there."""
+    since = redo_since(game_dir)
+    if not since:
         return False
     with contextlib.suppress(OSError):
-        return (folder / VERSION_FILE).read_text(encoding="utf-8").strip() != DEPTH_VERSION
-    return True
+        return any(p.stat().st_mtime < since for p in (game_dir / DEPTH_DIR).rglob("*.webp"))
+    return False
 
 
 def script_content() -> str:
@@ -596,8 +613,12 @@ class Job:
     games_done: int = 0
     games_total: int = 0
     started: float = 0.0
+    game_started: float = 0.0   # start of the current game (time left of this game)
     message: str = ""
     provider: str = ""
+    skip: bool = False          # "Skip this game": the current game stops, the next one starts
+    drive_full: bool = False
+    games_skipped: list = dataclasses.field(default_factory=list)   # "name: reason"
 
 
 job = Job()
@@ -617,17 +638,38 @@ def _process(games: list, estimator_factory=None):
             job.games_done += 1
             continue
         game_dir = root / "game"
-        job.game_id, job.game_name = game.id, game.name
-        redo = maps_outdated(game_dir)
-        todo = [m for m in wanted_images(game_dir) if redo or not (game_dir / depth_name(m.key)).is_file()]
+        job.game_id, job.game_name, job.game_started = game.id, game.name, time.time()
+        folder = game_dir / DEPTH_DIR
+        since = redo_since(game_dir)
+        if since is None and not (folder / VERSION_FILE).is_file():
+            since = 0.0                     # first time: only the missing maps
+        if since is not None:
+            # written before the first map: an interrupted run resumes (the maps made since then are kept)
+            folder.mkdir(parents=True, exist_ok=True)
+            with contextlib.suppress(OSError):
+                (folder / VERSION_FILE).unlink()
+            with contextlib.suppress(OSError):
+                if not (folder / REDO_FILE).is_file():
+                    (folder / REDO_FILE).write_text(repr(since), encoding="utf-8")
+
+        def needed(m) -> bool:
+            dst = game_dir / depth_name(m.key)
+            try:
+                mtime = dst.stat().st_mtime
+            except OSError:
+                return True                 # no map yet
+            return bool(since) and mtime < since
+        todo = [m for m in wanted_images(game_dir) if needed(m)]
         job.done, job.total = 0, len(todo)
         tools = remaster.tools() if any(pathlib.PurePosixPath(m.key).suffix.lower() in tuple(toygen.VIDEO_EXTS) for m in todo) else {}
-        (game_dir / DEPTH_DIR).mkdir(parents=True, exist_ok=True)
-        if redo:
-            with contextlib.suppress(OSError):
-                (game_dir / DEPTH_DIR / VERSION_FILE).unlink()
+        folder.mkdir(parents=True, exist_ok=True)
+        if job.skip:                        # Skip pressed while the previous game was ending: this one is skipped
+            job.skip = False
+            job.games_skipped.append(f"{game.name}: skipped")
+            job.games_done += 1
+            continue
         for media in todo:
-            if job.cancel or remaster._drive_full(root):
+            if job.cancel or job.skip or remaster._drive_full(root, job):
                 break
             error = make_depth(media, game_dir / depth_name(media.key), estimate, tools)
             if error == "skip":
@@ -638,12 +680,19 @@ def _process(games: list, estimator_factory=None):
             else:
                 job.made += 1
             job.done += 1
-        if job.done == job.total and not job.cancel:
+        if job.done == job.total and not job.cancel and not job.skip:
             with contextlib.suppress(OSError):
-                (game_dir / DEPTH_DIR / VERSION_FILE).write_text(DEPTH_VERSION, encoding="utf-8")
+                (folder / VERSION_FILE).write_text(DEPTH_VERSION, encoding="utf-8")
+                (folder / REDO_FILE).unlink(missing_ok=True)
         if count_done(root):
             with contextlib.suppress(OSError):
                 write_script(root)
+        if job.skip and not job.cancel:
+            job.skip = False
+            job.games_skipped.append(f"{game.name}: skipped at {job.done}/{job.total} (kept, Start all goes on with it next time)")
+        elif job.drive_full:
+            job.drive_full = False
+            job.games_skipped.append(f"{game.name}: {job.message}")
         job.games_done += 1
 
 
@@ -656,6 +705,8 @@ async def start(games: list):
         await asyncio.get_running_loop().run_in_executor(None, _process, games)
         verb = "Cancelled" if job.cancel else "Done"
         job.message = f"{verb}: {job.made} depth map(s) made, {job.skipped} small pictures left out, {job.failed} failed."
+        if job.games_skipped:
+            job.message += f" {len(job.games_skipped)} game(s) skipped or stopped."
     except Exception as exc:
         job.message = f"Stopped: {type(exc).__name__}: {exc}"
         _log(repr(exc))
@@ -682,8 +733,14 @@ def _draw_requirements(imgui) -> bool:
     return not error and model is not None
 
 
+def skip_current():
+    """Every game: stops the current game at once (its maps are kept, it resumes next time), goes on with the next one."""
+    if job.running and job.games_total > 1:
+        job.skip = True
+
+
 def _draw_progress(imgui):
-    elapsed = time.time() - job.started
+    elapsed = time.time() - (job.game_started or job.started)       # this game only (not the games before it)
     eta = ""
     if job.done and job.total > job.done:
         left = elapsed / max(1, job.done) * (job.total - job.done)
@@ -691,8 +748,17 @@ def _draw_progress(imgui):
     if job.games_total > 1:
         imgui.text(f"Game {min(job.games_done + 1, job.games_total)} / {job.games_total}: {job.game_name}")
     imgui.text(f"Depth maps: {job.done} / {job.total}{eta}  ({job.made} made, {job.failed} failed){'  - ' + job.provider if job.provider else ''}")
+    if job.games_total > 1:
+        if imgui.button("Skip this game###dp_skip"):
+            skip_current()
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Stops this game now (its depth maps are kept) and goes on with the next one.\n"
+                              "Start all comes back to it next time, where it stopped.")
+        imgui.same_line()
     if imgui.button("Cancel###dp_cancel"):
         job.cancel = True
+    for line in job.games_skipped[-5:]:
+        imgui.text_disabled("   " + line)
 
 
 def open_popup(game: Game):
@@ -726,6 +792,8 @@ def open_popup(game: Game):
             return
         if job.message and job.game_id == game.id:
             imgui.text_colored(job.message, 0.4, 0.85, 0.4)
+            for line in job.games_skipped[:3]:
+                imgui.text_disabled("   " + line)
         if _draw_requirements(imgui) and imgui.button("Start###dp_start"):
             if game.launch_state is not LaunchState.Idle:
                 state["msg"] = "Close the game first."
@@ -756,6 +824,8 @@ def open_all_popup():
             return
         if job.message:
             imgui.text_colored(job.message, 0.4, 0.85, 0.4)
+            for line in job.games_skipped[:8]:
+                imgui.text_disabled("   " + line)
         if _draw_requirements(imgui) and imgui.button("Start all###dpa_start"):
             games = sorted(globals.games.values(), key=lambda g: g.name.lower())
             async_thread.run(start(games))

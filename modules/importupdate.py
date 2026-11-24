@@ -624,6 +624,11 @@ def make_mod_plan(game: Game, source: pathlib.Path) -> ModPlan:
     if not files:
         raise ValueError("Nothing to install: no file in it.")
     root = exe.parent
+    if source.is_dir():
+        picked, game_root = source.resolve(), root.resolve()
+        if picked == game_root or picked in game_root.parents:
+            raise ValueError(f"{source} is the game folder or contains it: choose the folder of the mod itself "
+                             "(extracted somewhere else, e.g. in Downloads).")
     renpy = (root / "renpy").is_dir() and (root / "game").is_dir()
     name = source.name if source.is_dir() else source.stem
     plan = ModPlan(game, source, exe, root, root, "", files, name=name, free=installdate.free_space(root))
@@ -665,6 +670,12 @@ def _install_mod(plan: ModPlan, job: Job) -> str:
                 pairs.append((src, plan.target / src.relative_to(source)))
         if not pairs:
             raise ValueError("Nothing to install.")
+        # a file that is its own destination would be set aside then copied from where it no longer is
+        sources = {os.path.normcase(os.path.realpath(src)) for src, _ in pairs}
+        same = next((dst for _, dst in pairs if os.path.normcase(os.path.realpath(dst)) in sources), None)
+        if same is not None:
+            raise ValueError(f"The mod folder is inside the game where it would go (e.g. {same}): "
+                             "extract the mod somewhere else (e.g. Downloads). Nothing was changed.")
         job.phase = "Checking the game files are not in use..."
         locked = [dst for _, dst in pairs if dst.is_file() and _locked(dst)]
         if locked:
@@ -699,10 +710,16 @@ def _install_mod(plan: ModPlan, job: Job) -> str:
             else:
                 shutil.copy2(src, dst)      # your extracted folder stays as it is
             job.done += 1
+        stamps = {}
+        for _, dst in pairs:
+            with contextlib.suppress(OSError):
+                st = dst.stat()
+                stamps[dst.relative_to(plan.root).as_posix()] = [st.st_size, st.st_mtime_ns]
         info = installdate.local_info().setdefault(plan.game.id, {})
         info.setdefault("mods_installed", []).append({
             "id": mod_id, "name": plan.name, "source": str(plan.source), "date": int(time.time()),
             "files": [dst.relative_to(plan.root).as_posix() for _, dst in pairs], "replaced": replaced,
+            "stamps": stamps,           # size + date of each file as installed: Uninstall leaves alone what changed since
         })
         installdate.save_local_info()
     finally:
@@ -715,6 +732,20 @@ def _install_mod(plan: ModPlan, job: Job) -> str:
     lines.append("Launch the game: if it shows an error at start, the mod does not fit this version: right click > "
                  "Mods & Extras > Installed mods > Uninstall.")
     return "\n".join(lines)
+
+
+def _changed_since(path: pathlib.Path, mod: dict, rel: str) -> bool:
+    """True when the file is no longer the one the mod put there (an Import Update replaced it)."""
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    stamp = (mod.get("stamps") or {}).get(rel)
+    if stamp:
+        return [st.st_size, st.st_mtime_ns] != list(stamp)
+    # mods installed before the stamps: a file created after the install (moved in from an update) is not the mod's
+    created = getattr(st, "st_birthtime", None) or st.st_ctime
+    return created > int(mod.get("date") or 0) + 5
 
 
 def uninstall_mod(game: Game, mod_id: int) -> str:
@@ -734,7 +765,14 @@ def uninstall_mod(game: Game, mod_id: int) -> str:
     errors = []
     dirs = set()
     restored = {r.lower() for r in mod.get("replaced", [])}
+    changed = set()                     # replaced since by a game update (Import Update): the newer file stays
+    by_lower = {f.lower(): f for f in mod.get("files", [])}
     for rel in mod.get("files", []):
+        # Ren'Py recompiles the mod's .rpyc from its .rpy at launch: the .rpy says whether it is still the mod's
+        source = by_lower.get(rel.lower()[:-1], rel) if rel.lower().endswith(".rpyc") else rel
+        if _changed_since(root / source, mod, source):
+            changed.add(rel.lower())
+            continue
         targets = [rel] + ([rel + "c"] if rel.lower().endswith(".rpy") and (rel + "c").lower() not in restored else [])
         for item in targets:
             path = root / item
@@ -746,6 +784,9 @@ def uninstall_mod(game: Game, mod_id: int) -> str:
                 errors.append(f"{item}: {exc}")
     backup = root / MOD_BACKUP_DIR / str(mod_id)
     for rel in mod.get("replaced", []):
+        low = rel.lower()
+        if low in changed or (low.endswith(".rpyc") and low[:-1] in changed):
+            continue                    # the old file would go over the update's one
         try:
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             os.replace(backup / rel, root / rel)
@@ -762,7 +803,8 @@ def uninstall_mod(game: Game, mod_id: int) -> str:
             (root / MOD_BACKUP_DIR).rmdir()
         info["mods_installed"] = [m for m in mods if m.get("id") != mod_id]
         installdate.save_local_info()
-        _log(f"'{game.name}': mod {mod.get('name')} uninstalled")
+        _log(f"'{game.name}': mod {mod.get('name')} uninstalled"
+             + (f" ({len(changed)} file(s) updated since by the game were left as they are)" if changed else ""))
         return ""
     return "\n".join(errors[:10])
 

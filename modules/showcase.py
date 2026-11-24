@@ -18,7 +18,6 @@ import asyncio
 import collections
 import contextlib
 import datetime
-import json
 import math
 import os
 import pathlib
@@ -283,16 +282,15 @@ _play_log: dict | None = None
 def play_log() -> dict:
     global _play_log
     if _play_log is None:
-        try:
-            _play_log = json.loads((globals.data_path / "play_log.json").read_text(encoding="utf-8"))
-        except Exception:
+        _play_log = installdate._load_json("play_log.json")
+        if not isinstance(_play_log, dict):
             _play_log = {}
     return _play_log
 
 
 def _save_play_log():
     with contextlib.suppress(OSError):
-        (globals.data_path / "play_log.json").write_text(json.dumps(play_log()), encoding="utf-8")
+        installdate._save_json("play_log.json", play_log())
 
 
 async def play_log_loop():

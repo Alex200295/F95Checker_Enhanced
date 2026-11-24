@@ -41,6 +41,7 @@ def prefs() -> dict:
     p = installdate.prefs()
     p.setdefault("lock_hash", "")
     p.setdefault("lock_salt", "")
+    p.setdefault("lock_on_start", True)        # asked when F95Checker starts
     p.setdefault("lock_idle_min", 10)          # 0 = never
     p.setdefault("lock_on_minimise", True)
     p.setdefault("lock_title", "")             # "" = F95Checker
@@ -88,7 +89,7 @@ def check(pin: str) -> bool:
 def is_locked() -> bool:
     global _locked
     if _locked is None:
-        _locked = enabled()          # locked when F95Checker starts
+        _locked = enabled() and bool(prefs()["lock_on_start"])   # locked when F95Checker starts (option)
     return _locked and enabled()
 
 
@@ -210,7 +211,7 @@ def draw_settings(draw_settings_label, right_width: float):
     import imgui
     p = prefs()
     state = draw_settings.__dict__.setdefault("state", {"new": "", "msg": ""})
-    draw_settings_label("PIN lock:", "Asks for a PIN when F95Checker starts, after inactivity and (option) when minimised.\n"
+    draw_settings_label("PIN lock:", "Asks for a PIN when F95Checker starts (option), after inactivity and (option) when minimised.\n"
                                      "Forgotten PIN: close F95Checker, delete \"lock_hash\" in local_scan_prefs.json.")
     imgui.set_next_item_width(right_width * 0.5)
     _, state["new"] = imgui.input_text("###lock_new", state["new"], 64, imgui.INPUT_TEXT_PASSWORD)
@@ -227,6 +228,12 @@ def draw_settings(draw_settings_label, right_width: float):
         imgui.text_disabled(state["msg"])
     if not enabled():
         return
+    draw_settings_label("Lock at startup:", "Asks for the PIN each time F95Checker starts.\n"
+                                            "Off: only after inactivity, when minimised (option) or with the Lock button.")
+    changed, value = imgui.checkbox("###lock_start", bool(p["lock_on_start"]))
+    if changed:
+        p["lock_on_start"] = value
+        installdate.save_prefs()
     draw_settings_label("Lock after:", "Minutes without using the computer (keyboard / mouse anywhere). 0 = never.")
     imgui.set_next_item_width(right_width * 0.5)
     changed, value = imgui.slider_int("minutes###lock_idle", int(p["lock_idle_min"]), 0, 120)
