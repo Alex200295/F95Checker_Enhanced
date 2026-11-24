@@ -22,9 +22,13 @@ if __name__ == "__main__":
     body = "## ⬇️ Download\n"
     for asset_type, asset_icon in [("Windows", "🪟"), ("Linux", "🐧"), ("macOS-x64", "🍎"), ("macOS-arm64", "🍎"), ("Source", "🐍")]:
         print(f"Adding {asset_type}")
+        asset_url = None
         for asset in release["assets"]:
             if asset_type.lower() in asset["name"].lower():
                 asset_url = asset["browser_download_url"]
+        if not asset_url:
+            print(f"No {asset_type} zip (its build failed or was skipped): not listed")
+            continue
         body += f">### [{asset_type} {asset_icon}]({asset_url}) ([VirusTotal](https://www.virustotal.com/gui/file/))\n\n"
     body += (
         "## ❤️ Credits\n" +
