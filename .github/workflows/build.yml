@@ -294,7 +294,8 @@ jobs:
   release:
     name: "release"
     runs-on: "ubuntu-latest"
-    if: "github.event_name == 'release'"
+    # F95Checker Enhanced: the release text is written even when one build failed (e.g. no macOS arm64 runner available)
+    if: "${{ !cancelled() && github.event_name == 'release' }}"
     needs:
       - build
       - source
