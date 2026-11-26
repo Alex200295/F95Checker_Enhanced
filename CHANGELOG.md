@@ -1,3 +1,12 @@
+## 11.2.1.3
+
+### Added:
+- **The Handy over WiFi** (Handy REST API v3, no Intiface or Bluetooth needed): enter the Handy's connection key in the Toy panel, then Connect
+  - Ren'Py animation sync: each animation's script is sent to the Handy, which plays it in a loop by itself, locked to the Handy server clock; F95Checker puts it back in step every 5 s, or at once when the game jumps
+  - Without a script (gamepad rumble, audio, panel test): the Handy strokes by itself, the level sets speed and depth
+  - The toy panel caps apply: lowest / highest position, max speed, soft start, emergency stop (Pause / Ctrl+Alt+End); a Handy also seen by Intiface over Bluetooth is left alone meanwhile
+  - Needs an Application ID for the Handy API (free, Handy developer portal), asked once in the panel
+
 ## 11.2.1.2
 
 ### Added:

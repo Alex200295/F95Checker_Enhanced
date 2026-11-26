@@ -201,6 +201,9 @@ Central launches*, turn your toy on, *Devices → Start Scanning*. Then **Toy & 
   several CPU cores); otherwise each animation is analysed the first time it's shown.
 - **Unity / Unreal**: controller rumble through Intiface Game Haptics Router. **Other games**: follows the sound.
 - **Strokers** (The Handy, Keon…) follow the script positions.
+- **The Handy over WiFi** (no Intiface): Handy on your WiFi (pink LED), its connection key (Handy app) in the panel → *Connect*.
+  It plays each animation's script by itself, in step with the game. An Application ID for the Handy API is asked once
+  (free, Handy developer portal). Use WiFi or Bluetooth, not both.
 - **Safety**: caps on strength, soft start, pause when the game isn't in front, session limit, stop when the game quits.
   **Emergency stop: Pause key or Ctrl+Alt+End**, anywhere in Windows, or the red STOP TOY button.
 - Per game: right click → *Toy* (sync on / off, mode, intensity, offset).

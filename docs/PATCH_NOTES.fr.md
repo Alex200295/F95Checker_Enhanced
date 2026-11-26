@@ -2,6 +2,15 @@
 
 **[English](../CHANGELOG.md)** · [README](../README.fr.md) · [Guide d'utilisation](GUIDE_UTILISATEUR.md)
 
+## 11.2.1.3
+
+### Ajouté :
+- **The Handy en WiFi** (API Handy REST v3, sans Intiface ni Bluetooth) : saisis la clé de connexion du Handy dans le panneau Toy, puis Connect
+  - Synchro des animations Ren'Py : le script de chaque animation est envoyé au Handy, qui le joue en boucle tout seul, calé sur l'horloge du serveur Handy ; F95Checker le recale toutes les 5 s, ou tout de suite quand le jeu saute
+  - Sans script (vibrations de manette, son, test du panneau) : le Handy fait le va-et-vient tout seul, l'intensité règle la vitesse et l'amplitude
+  - Les plafonds du panneau s'appliquent : position basse / haute, vitesse max, démarrage doux, arrêt d'urgence (Pause / Ctrl+Alt+Fin) ; un Handy aussi vu par Intiface en Bluetooth est laissé de côté pendant ce temps
+  - Il faut un identifiant d'application (Application ID) pour l'API Handy (gratuit, portail développeur Handy), demandé une fois dans le panneau
+
 ## 11.2.1.2
 
 ### Ajouté :

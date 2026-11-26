@@ -2,7 +2,7 @@ import os
 import pathlib
 import sys
 
-version = "11.2.1.2"  # F95Checker Enhanced: <WillyJL's version>.<Enhanced release>, = the GitHub release tag
+version = "11.2.1.3"  # F95Checker Enhanced: <WillyJL's version>.<Enhanced release>, = the GitHub release tag
 release = True  # F95Checker Enhanced: behave like a release (no "update from beta" prompt)
 build_number = 0
 version_name = f"{version}{'' if release else ' beta'}{'' if release or not build_number else ' ' + str(build_number)}" + " Enhanced"

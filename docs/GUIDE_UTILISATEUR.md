@@ -219,6 +219,9 @@ Intiface Central launches*, allume ton jouet, *Devices → Start Scanning*. Puis
   s'affiche.
 - **Unity / Unreal** : les vibrations de manette, via Intiface Game Haptics Router. **Autres jeux** : suit le son.
 - **Va-et-vient** (The Handy, Keon…) : suivent les positions du script.
+- **The Handy en WiFi** (sans Intiface) : Handy sur ton WiFi (LED rose), sa clé de connexion (appli Handy) dans le panneau →
+  *Connect*. Il joue le script de chaque animation tout seul, calé sur le jeu. Un identifiant d'application (Application ID)
+  pour l'API Handy est demandé une fois (gratuit, portail développeur Handy). WiFi ou Bluetooth, pas les deux.
 - **Sécurité** : plafonds de puissance, démarrage doux, pause quand le jeu n'est pas au premier plan, durée maximale,
   arrêt quand le jeu se ferme. **Arrêt d'urgence : touche Pause ou Ctrl+Alt+Fin**, partout dans Windows, ou le bouton
   rouge STOP TOY.

@@ -24,6 +24,7 @@ Safety, always on:
 Lovense Max 2 in Intiface: "Vibrate" (20 steps) + "Constrict" (air pump, few steps, slow). Any
 actuator named Vibrate / Oscillate is driven by the vibration track, Constrict / Inflate by the air one.
 Strokers (The Handy, Kiiroo Keon...: Intiface "LinearCmd") follow the funscript positions themselves,
+The Handy can also be driven over WiFi (handy.py, Handy REST API v3) instead of Intiface over Bluetooth,
 one move per script action, sent just before it starts; without a script (or a flat one) they do a
 plain up-and-down whose speed follows the vibration level. Several toys at once are fine.
 Data: <F95Checker data>/toy.json, toy_patterns/*.json, toy_scripts/<game id>/*.funscript.
@@ -54,6 +55,7 @@ from external import (
 )
 from modules import (
     globals,
+    handy,
     icons,
     installdate,
     msgbox,
@@ -87,6 +89,8 @@ DEFAULT_SETTINGS = {
     "stroke_max": 1.0,
     "max_stroke_speed": 3.0,        # strokers: lengths per second at most (3 = a full stroke in 0.33 s)
     "stroke_lead_ms": 0,            # strokers: send each move this much earlier (Bluetooth delay)
+    "handy_key": "",                # The Handy over WiFi: its connection key ("" = not used)
+    "handy_app_id": "",             # Application ID for the Handy API ("" = the built-in one, if any)
     "pause_unfocused": True,
     "idle_stop_s": 15,              # mode B: stop when the game sends nothing for this long
     "session_max_min": 90,
@@ -375,15 +379,16 @@ class ButtplugClient:
     def has_linear(self) -> bool:
         return any(dev.linear for dev in self.devices.values())
 
-    async def send_linear(self, position: float, duration_ms: int):
-        """Strokers: go to position (0 = bottom, 1 = top) in duration_ms."""
+    async def send_linear(self, position: float, duration_ms: int, skip_handy: bool = False):
+        """Strokers: go to position (0 = bottom, 1 = top) in duration_ms.
+        skip_handy: The Handy is driven over WiFi, its Bluetooth link (if any) is left alone."""
         if not self.connected:
             return
         position = max(0.0, min(1.0, position))
         duration_ms = max(1, int(duration_ms))
         async with self._lock:
             for dev in list(self.devices.values()):
-                if dev.linear:
+                if dev.linear and not (skip_handy and "handy" in dev.name.lower()):
                     vectors = [{"Index": f.index, "Duration": duration_ms, "Position": round(position, 4)} for f in dev.linear]
                     with contextlib.suppress(Exception):
                         await self._send("LinearCmd", DeviceIndex=dev.index, Vectors=vectors)
@@ -1394,6 +1399,8 @@ class Engine:
         self.speed_short = 0.0
         self.stroke = None               # what strokers follow this tick: ("script", script, t_ms, invert) / ("level", 0..1) / None
         self.stroke_state = StrokeState()
+        self.handy = handy.HandyCloud()      # The Handy over WiFi (next to / instead of Intiface)
+        self.handy.log = _log
         self.live_test: tuple[float, float] | None = None   # panel sliders
         self.ghr_process = None
         self.resume_client_after = False
@@ -1412,6 +1419,11 @@ class Engine:
             pass
         finally:
             self._connecting = False
+
+    async def connect_handy(self):
+        cfg = settings()
+        if cfg["handy_key"].strip():
+            await self.handy.connect(cfg["handy_key"], cfg["handy_app_id"])
 
     async def connect_retry(self, seconds: float = 25):
         deadline = time.monotonic() + seconds
@@ -1450,6 +1462,7 @@ class Engine:
         self.vibe = self.air = 0.0
         self.stroke, self.stroke_state = None, StrokeState()
         await self.client.stop_all()
+        await self.handy.stop_now()
         if was_external and self.resume_client_after:
             self.resume_client_after = False
             asyncio.create_task(self.connect_retry(15))
@@ -1646,6 +1659,7 @@ class Engine:
 
     async def _drive_strokers(self, now: float, stroke, ramp: float):
         """Strokers: one move per script action (target + time to reach it), or a plain up-and-down."""
+        self.handy.drive(stroke, ramp, settings())    # The Handy over WiFi: never waits, does its own requests
         c = self.client
         if not c.connected or not c.has_linear():
             return
@@ -1680,7 +1694,7 @@ class Engine:
         # safety: never faster than max_stroke_speed (the move takes longer instead)
         duration = max(duration, abs(position - st.last_pos) / max(0.2, float(cfg["max_stroke_speed"])) * 1000, 20)
         st.last_pos = position
-        await c.send_linear(position, int(duration))
+        await c.send_linear(position, int(duration), skip_handy=self.handy.connected)
 
     def _script(self, game: Game, key: str) -> toygen.Script | None:
         cache_key = (game.id, key)
@@ -1718,8 +1732,10 @@ def emergency_stop(origin="button"):
         engine.audio.stop()
         engine._kill_ghr()
         await engine.client.stop_all()
+        await engine.handy.stop_now()
         await asyncio.sleep(0.2)
         await engine.client.stop_all()
+        await engine.handy.stop_now()
         native = engine.source == "native"
         await engine.stop("EMERGENCY STOP - press Resume to use the toy again" +
                           (" (this game drives the toy itself: use its own stop or close it)" if native else ""))
@@ -1838,10 +1854,15 @@ async def _on_game_launched(game: Game):
                                  "Emergency stop (Pause key / Ctrl+Alt+End) closes Game Haptics Router: the toy stops.",
                                  MsgBox.info)
         return
-    if s["auto_intiface"] and not engine.client.connected:
+    if settings()["handy_key"].strip() and not engine.handy.connected:
+        await engine.connect_handy()
+    if s["auto_intiface"] and not engine.client.connected and not engine.handy.connected:
         _log(ensure_intiface())
     if not engine.client.connected:
-        await engine.connect_retry(25)
+        if engine.handy.connected:
+            await engine.connect()                  # one try (other toys): The Handy does not need Intiface
+        else:
+            await engine.connect_retry(25)
     if mode == "B":
         if not hook_installed(game):
             error = install_hook(game)
@@ -1867,6 +1888,7 @@ def setup():
         _start_hotkeys()
         if settings()["auto_connect"]:
             async_thread.run(engine.connect())
+            async_thread.run(engine.connect_handy())
     except Exception as exc:
         _log(f"Setup error: {exc}")
     try:
@@ -1878,6 +1900,8 @@ def setup():
         with contextlib.suppress(Exception):
             future = async_thread.run(engine.client.stop_all())
             future.result(timeout=2)
+        with contextlib.suppress(Exception):
+            async_thread.run(engine.handy.disconnect()).result(timeout=3)
         with contextlib.suppress(Exception):
             async_thread.run(engine.client.disconnect()).result(timeout=2)
 
@@ -1966,6 +1990,43 @@ def _slider(label: str, value: float, lo: float, hi: float, fmt="%.2f", width=No
     return imgui.slider_float(label, value, lo, hi, fmt)
 
 
+def _draw_handy_line(s: dict, scaled):
+    """The Handy over WiFi: status, connection key / Application ID, Connect / Disconnect / Forget."""
+    import imgui
+    h = engine.handy
+    st = _panel_state
+    imgui.text(f"The Handy over WiFi: {h.status()}")
+    if h.connected:
+        imgui.same_line()
+        if imgui.small_button("Disconnect###handy_disc"):
+            async_thread.run(h.disconnect())
+        return
+    if "handy_key" not in st:
+        st["handy_key"], st["handy_app"] = s["handy_key"], s["handy_app_id"]
+    imgui.set_next_item_width(scaled(150))
+    _, st["handy_key"] = imgui.input_text("Connection key###handy_key", st["handy_key"], 64, imgui.INPUT_TEXT_PASSWORD)
+    if imgui.is_item_hovered():
+        imgui.set_tooltip("In the Handy app (or handyfeeling.com), with the Handy connected to your WiFi (pink LED).\n"
+                          "Use either WiFi here or Bluetooth through Intiface, not both.")
+    if not handy.DEFAULT_APP_ID or st["handy_app"]:
+        imgui.same_line()
+        imgui.set_next_item_width(scaled(150))
+        _, st["handy_app"] = imgui.input_text("Application ID###handy_app", st["handy_app"], 128, imgui.INPUT_TEXT_PASSWORD)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(f"Free: sign up on the Handy developer portal ({handy.PORTAL_URL}),\n"
+                              "then issue an Application ID for the Handy REST API v3.")
+    imgui.same_line()
+    if imgui.small_button("Connect###handy_conn"):
+        s["handy_key"], s["handy_app_id"] = st["handy_key"].strip(), st["handy_app"].strip()
+        save_settings()
+        async_thread.run(engine.connect_handy())
+    if s["handy_key"]:
+        imgui.same_line()
+        if imgui.small_button("Forget###handy_forget"):
+            s["handy_key"] = st["handy_key"] = ""
+            save_settings()
+
+
 def _draw_panel():
     import imgui
     s = settings()
@@ -1981,6 +2042,7 @@ def _draw_panel():
             async_thread.run(engine.client.scan())
     elif imgui.small_button("Connect"):
         async_thread.run(engine.connect())
+    _draw_handy_line(s, scaled)
     stroke_text = (f", stroke at {int(engine.stroke_state.last_pos * 100)}%"
                    if engine.client.connected and engine.client.has_linear() else "")
     imgui.text(f"Output: {int(engine.vibe * 100)}% vibration, {int(engine.air * 100)}% air{stroke_text}  -  {engine.status}"
@@ -2111,6 +2173,8 @@ def _draw_panel():
             "   - Games with their own toy support: F95Checker only starts Intiface for them.\n"
             "3. EMERGENCY STOP anytime: Pause key, Ctrl+Alt+End, or the red button (sidebar / here).\n"
             "   It stays stopped until you press Resume.\n"
+            "The Handy over WiFi (no Intiface needed): enter its connection key at the top of this panel, then Connect.\n"
+            "   It plays each animation's script by itself, locked to the Handy server clock.\n"
             "Caps (max vibration / air) apply to everything, including patterns and tests."
         )
     if dirty:
